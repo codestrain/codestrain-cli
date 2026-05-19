@@ -299,19 +299,37 @@ def extract_session_stats(events):
             if any(kw in lower for kw in ("error", "exception", "failed", "traceback")):
                 error_turns += 1
 
-    # Compute duration
+    # Compute "active" duration vs wall-clock "span".
+    #
+    # `duration_seconds` (default reported as "Duration:") is ACTIVE time —
+    # sum of gaps between consecutive turns that are ≤ ACTIVE_GAP_THRESHOLD
+    # (5 min). This matches the ccusage / Claude Code Usage Monitor convention
+    # and reflects real coding time, not the calendar span of a session that
+    # may stay open for days.
+    #
+    # `span_seconds` is kept for advanced views — end_time − start_time of
+    # the whole session, idle minutes included.
     duration_seconds = 0.0
+    span_seconds = 0.0
     start_time = None
     end_time = None
     if timestamps:
         timestamps.sort()
         start_time = timestamps[0]
         end_time = timestamps[-1]
-        duration_seconds = (end_time - start_time).total_seconds()
+        span_seconds = (end_time - start_time).total_seconds()
+        # Active-time threshold: gap above this between turns ⇒ user went idle.
+        # 5 minutes by default; override via CODESTRAIN_GAP_MIN (minutes).
+        gap_threshold = max(1, int(os.environ.get("CODESTRAIN_GAP_MIN") or "5")) * 60
+        for prev, curr in zip(timestamps, timestamps[1:]):
+            gap = (curr - prev).total_seconds()
+            if 0 < gap <= gap_threshold:
+                duration_seconds += gap
 
     return {
         "turn_count": turn_count,
         "duration_seconds": duration_seconds,
+        "span_seconds": span_seconds,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "total_cache_creation_tokens": total_cache_creation_tokens,
@@ -322,6 +340,8 @@ def extract_session_stats(events):
         "start_time": start_time,
         "end_time": end_time,
     }
+
+
 
 
 # ── Model pricing (USD per 1M tokens) ────────────────────────────────────────
@@ -500,8 +520,15 @@ def print_session_summary(stats_list, label=""):
         print(f"  {bold(label)}")
         print()
 
+    total_span = sum(s.get("span_seconds", 0) for s in stats_list)
+
     print(f"  Sessions:  {bold(str(len(stats_list)))}")
-    print(f"  Duration:  {bold(format_duration(total_duration))}")
+    # Duration = active coding time (sum of inter-turn gaps ≤ 5 min).
+    # Span    = calendar wall-clock from first to last turn — usually MUCH larger
+    #           because Claude Code sessions can stay open across days. We show
+    #           both so the user can tell active work apart from idle drift.
+    print(f"  Duration:  {bold(format_duration(total_duration))}  "
+          f"{c(Colors.DIM, f'(span {format_duration(total_span)})')}")
     print(f"  Turns:     {bold(str(total_turns))}")
     print(f"  Tokens:    {c(Colors.CYAN, format_tokens(total_input))} in / {c(Colors.CYAN, format_tokens(total_output))} out")
     print(f"  Cost:      {c(Colors.AMBER, format_cost(total_cost))}")
