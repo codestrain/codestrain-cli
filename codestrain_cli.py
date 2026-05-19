@@ -551,8 +551,13 @@ def print_session_summary(stats_list, label=""):
         print(f"  {c(Colors.YELLOW, 'Weekend coding detected (+1.5 strain)')}")
 
 
-def print_project_breakdown(project_stats):
-    """Print per-project breakdown."""
+def print_project_breakdown(project_stats, anonymize=False):
+    """Print per-project breakdown.
+
+    `anonymize` replaces real project names with `project-1` / `project-2`...
+    (preserving the duration-sorted order) so the breakdown can be safely
+    shared in screenshots / social media without leaking client names.
+    """
     if not project_stats:
         return
 
@@ -566,12 +571,15 @@ def print_project_breakdown(project_stats):
         reverse=True,
     )
 
-    for project, stats_list in sorted_projects:
+    for i, (project, stats_list) in enumerate(sorted_projects, start=1):
         total_duration = sum(s["duration_seconds"] for s in stats_list)
         total_cost = sum(s["total_cost"] for s in stats_list)
         total_turns = sum(s["turn_count"] for s in stats_list)
 
-        project_display = project[:30] + "..." if len(project) > 30 else project
+        if anonymize:
+            project_display = f"project-{i}"
+        else:
+            project_display = project[:30] + "..." if len(project) > 30 else project
         print(
             f"  {c(Colors.WHITE, project_display):<36}"
             f"{bold(format_duration(total_duration)):>10}  "
@@ -622,6 +630,17 @@ examples:
         "--no-color",
         action="store_true",
         help="Disable colored output",
+    )
+    parser.add_argument(
+        "--anonymize",
+        action="store_true",
+        help="Replace real project names with project-1/project-2/... "
+             "(safe for screenshots & social posts)",
+    )
+    parser.add_argument(
+        "--no-breakdown",
+        action="store_true",
+        help="Skip the per-project breakdown section entirely",
     )
 
     args = parser.parse_args()
@@ -713,15 +732,17 @@ examples:
     print_header()
 
     time_label = "Today" if not args.all else "All Time"
-    if args.project:
+    if args.project and not args.anonymize:
         time_label += f" (project: {args.project})"
+    elif args.project and args.anonymize:
+        time_label += " (filtered)"
 
     print_divider(time_label)
     print()
     print_session_summary(all_stats)
 
-    if len(project_stats) > 1:
-        print_project_breakdown(project_stats)
+    if len(project_stats) > 1 and not args.no_breakdown:
+        print_project_breakdown(project_stats, anonymize=args.anonymize)
 
     print()
 
