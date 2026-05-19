@@ -5,10 +5,10 @@
 *Your AI coding recovery score, from the terminal.*
 
 <p align="center">
-  <a href="https://pypi.org/project/codestrain/"><img src="https://img.shields.io/pypi/v/codestrain.svg" alt="PyPI version"/></a>
-  <a href="https://pypi.org/project/codestrain/"><img src="https://img.shields.io/pypi/pyversions/codestrain.svg" alt="Python versions"/></a>
-  <a href="https://github.com/codestrain/codestrain-cli/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/codestrain.svg" alt="License: MIT"/></a>
-  <a href="https://github.com/codestrain/codestrain-cli/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/codestrain/codestrain-cli/ci.yml?branch=main" alt="CI status"/></a>
+  <a href="https://pypi.org/project/codestrain/"><img src="https://img.shields.io/pypi/v/codestrain.svg?v=2" alt="PyPI version"/></a>
+  <a href="https://pypi.org/project/codestrain/"><img src="https://img.shields.io/pypi/pyversions/codestrain.svg?v=2" alt="Python versions"/></a>
+  <a href="https://github.com/codestrain/codestrain-cli/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/codestrain.svg?v=2" alt="License: MIT"/></a>
+  <a href="https://github.com/codestrain/codestrain-cli/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/codestrain/codestrain-cli/ci.yml?branch=main&v=2" alt="CI status"/></a>
 </p>
 
 ## What is this
