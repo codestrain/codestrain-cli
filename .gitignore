@@ -1,0 +1,28 @@
+# Python build / packaging
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# uv / venv
+.venv/
+.uv-cache/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Credentials — never commit
+.pypirc
+.pypi_api_key
+.env
