@@ -75,24 +75,102 @@ def readiness_label(recovery):
     return c(Colors.RED, "RED -- High strain. Consider a lighter day.")
 
 
+# ── Path auto-detect ─────────────────────────────────────────────────────────
+
+# Candidate locations where Claude Code might store JSONL. First hit wins.
+DEFAULT_JSONL_CANDIDATES = (
+    "~/.claude/projects",
+    "~/Library/Application Support/Claude/projects",
+    "~/Library/Application Support/ClaudeBar-Probe",
+    "~/Library/Application Support/CodexBar-ClaudeProbe",
+    "~/.config/claude/projects",       # Linux fallback
+    "~/AppData/Roaming/Claude/projects",  # Windows fallback
+)
+
+
+def detect_jsonl_path():
+    """Return the first existing default location, or None.
+
+    Used when --path is not given. Walks DEFAULT_JSONL_CANDIDATES and returns
+    the first path that has ANY *.jsonl file inside (depth-2 max).
+    """
+    for cand in DEFAULT_JSONL_CANDIDATES:
+        p = Path(os.path.expanduser(cand))
+        if not p.exists():
+            continue
+        # Cheap probe: any *.jsonl two levels down?
+        for jsonl in p.rglob("*.jsonl"):
+            return p
+    return None
+
+
+def suggest_jsonl_paths():
+    """Return a list of (path, jsonl_count) for every candidate that exists."""
+    found = []
+    for cand in DEFAULT_JSONL_CANDIDATES:
+        p = Path(os.path.expanduser(cand))
+        if not p.exists():
+            continue
+        n = sum(1 for _ in p.rglob("*.jsonl"))
+        if n > 0:
+            found.append((p, n))
+    return found
+
+
+def decode_project_name(encoded):
+    """Convert `-Users-konn4-workplace-codestrain` → `codestrain` (basename only).
+
+    Claude Code stores each project's JSONL under a directory whose name is the
+    cwd with `/` → `-`. The last segment is the project folder name. Falls back
+    to the raw encoded string if it doesn't look like a `-Users-` prefix.
+    """
+    if not encoded.startswith("-Users-") and not encoded.startswith("-home-"):
+        return encoded
+    parts = encoded.lstrip("-").split("-")
+    return parts[-1] if parts else encoded
+
+
 # ── JSONL Parsing ────────────────────────────────────────────────────────────
 
 def find_jsonl_files(base_dir, project_filter=None):
-    """Walk ~/.claude/projects/ and return list of (project_name, file_path)."""
+    """Walk the JSONL root and return list of (project_name, file_path).
+
+    Project name preference:
+      1. The first `cwd` field seen inside the first event of the file
+         (decoded to a clean basename, e.g. "codestrain").
+      2. Fallback: decoded directory name (-Users-foo-bar-baz → baz).
+    """
     base = Path(base_dir)
     if not base.exists():
         return []
 
     results = []
     for jsonl in base.rglob("*.jsonl"):
-        # Derive project name from the directory structure.
-        # Typical layout: ~/.claude/projects/<path-hash>/<session>.jsonl
         rel = jsonl.relative_to(base)
         parts = list(rel.parts)
-        if len(parts) >= 2:
-            project_name = parts[0]
-        else:
-            project_name = "unknown"
+        encoded_dir = parts[0] if len(parts) >= 2 else "unknown"
+
+        # Try to read `cwd` from the first parseable event in the file
+        project_name = None
+        try:
+            with jsonl.open() as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    cwd = d.get("cwd")
+                    if isinstance(cwd, str) and cwd:
+                        project_name = Path(cwd).name or Path(cwd).parent.name
+                        break
+        except OSError:
+            pass
+
+        if not project_name:
+            project_name = decode_project_name(encoded_dir)
 
         if project_filter and project_filter.lower() not in project_name.lower():
             continue
@@ -121,10 +199,20 @@ def parse_jsonl(path):
 
 
 def extract_session_stats(events):
-    """Extract stats from parsed JSONL events."""
+    """Extract stats from parsed JSONL events.
+
+    Token + model + cost are read from `event["message"]["usage"]` / `event["message"]["model"]`
+    — that's where Claude Code actually writes them. The older top-level layout is kept as
+    a fallback for any other JSONL flavor a user might point us at.
+
+    Cost is COMPUTED from token counts × `MODEL_PRICING_USD_PER_MTOK` (Claude Code does not
+    write a costUSD field). Includes cache-creation + cache-read tokens, priced separately.
+    """
     timestamps = []
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_creation_tokens = 0
+    total_cache_read_tokens = 0
     total_cost = 0.0
     turn_count = 0
     error_turns = 0
@@ -136,7 +224,6 @@ def extract_session_stats(events):
         if ts:
             try:
                 if isinstance(ts, str):
-                    # ISO format
                     dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
                     timestamps.append(dt)
                 elif isinstance(ts, (int, float)):
@@ -145,33 +232,72 @@ def extract_session_stats(events):
             except (ValueError, OSError):
                 pass
 
-        # Extract tokens from usage field
-        usage = event.get("usage", {})
-        if isinstance(usage, dict):
-            total_input_tokens += usage.get("input_tokens", 0)
-            total_output_tokens += usage.get("output_tokens", 0)
+        # Tokens + model live inside event["message"] for Claude Code; fall back to
+        # top-level for synthetic fixtures or other tools.
+        msg = event.get("message") if isinstance(event.get("message"), dict) else {}
+        usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else event.get("usage", {})
 
-        # Extract cost
-        cost = event.get("costUSD", event.get("cost_usd", 0))
-        if isinstance(cost, (int, float)):
-            total_cost += cost
+        # Cost preference: explicit costUSD on the event wins (some forks of
+        # ccusage / Claude Code variants write it pre-computed). Otherwise
+        # compute from tokens × MODEL_PRICING_USD_PER_MTOK below.
+        explicit_cost = event.get("costUSD", event.get("cost_usd"))
+        if isinstance(explicit_cost, (int, float)):
+            total_cost += explicit_cost
+
+        if isinstance(usage, dict):
+            inp = int(usage.get("input_tokens") or 0)
+            out = int(usage.get("output_tokens") or 0)
+            cache_w = int(usage.get("cache_creation_input_tokens") or 0)
+            cache_r = int(usage.get("cache_read_input_tokens") or 0)
+            total_input_tokens += inp
+            total_output_tokens += out
+            total_cache_creation_tokens += cache_w
+            total_cache_read_tokens += cache_r
+
+            model = msg.get("model") or event.get("model") or ""
+            if model:
+                models_used.add(model)
+                # Only compute pricing-based cost when no explicit costUSD was
+                # provided — avoids double-counting in fixture data.
+                if not isinstance(explicit_cost, (int, float)):
+                    pricing = price_per_mtok_for_model(model)
+                    if pricing:
+                        p_in, p_out, p_cw, p_cr = pricing
+                        total_cost += (
+                            inp     / 1_000_000 * p_in
+                            + out   / 1_000_000 * p_out
+                            + cache_w / 1_000_000 * p_cw
+                            + cache_r / 1_000_000 * p_cr
+                        )
 
         # Count turns
         role = event.get("role", event.get("type", ""))
         if role in ("assistant", "user", "tool"):
             turn_count += 1
 
-        # Detect errors
+        # Detect errors — search BOTH a plain string `message` and a structured one
         message = event.get("message", event.get("content", ""))
+        text_blob = ""
         if isinstance(message, str):
-            lower = message.lower()
+            text_blob = message
+        elif isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                text_blob = content
+            elif isinstance(content, list):
+                # Claude Code structured content (text + thinking + tool_use blocks)
+                pieces = []
+                for block in content:
+                    if isinstance(block, dict):
+                        for k in ("text", "thinking", "content"):
+                            v = block.get(k)
+                            if isinstance(v, str):
+                                pieces.append(v)
+                text_blob = " ".join(pieces)
+        if text_blob:
+            lower = text_blob.lower()
             if any(kw in lower for kw in ("error", "exception", "failed", "traceback")):
                 error_turns += 1
-
-        # Track models
-        model = event.get("model", "")
-        if model:
-            models_used.add(model)
 
     # Compute duration
     duration_seconds = 0.0
@@ -188,12 +314,64 @@ def extract_session_stats(events):
         "duration_seconds": duration_seconds,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
+        "total_cache_creation_tokens": total_cache_creation_tokens,
+        "total_cache_read_tokens": total_cache_read_tokens,
         "total_cost": total_cost,
         "error_turns": error_turns,
         "models": models_used,
         "start_time": start_time,
         "end_time": end_time,
     }
+
+
+# ── Model pricing (USD per 1M tokens) ────────────────────────────────────────
+#
+# Tuple order: (input, output, cache_creation_write, cache_read).
+# Source: Anthropic pricing page snapshot, May 2026. Keep in sync with
+# server/ml/training/pricing or ccusage if pricing drifts.
+
+MODEL_PRICING_USD_PER_MTOK = {
+    # Claude 4.x family
+    "claude-opus-4-7":        (15.00, 75.00, 18.75, 1.50),
+    "claude-opus-4-6":        (15.00, 75.00, 18.75, 1.50),
+    "claude-opus-4-5":        (15.00, 75.00, 18.75, 1.50),
+    "claude-opus-4":          (15.00, 75.00, 18.75, 1.50),
+    "claude-sonnet-4-6":      ( 3.00, 15.00,  3.75, 0.30),
+    "claude-sonnet-4-5":      ( 3.00, 15.00,  3.75, 0.30),
+    "claude-sonnet-4":        ( 3.00, 15.00,  3.75, 0.30),
+    "claude-haiku-4-5":       ( 0.80,  4.00,  1.00, 0.08),
+    "claude-haiku-4":         ( 0.80,  4.00,  1.00, 0.08),
+    # Claude 3.x legacy
+    "claude-3-7-sonnet":      ( 3.00, 15.00,  3.75, 0.30),
+    "claude-3-5-sonnet":      ( 3.00, 15.00,  3.75, 0.30),
+    "claude-3-5-haiku":       ( 0.80,  4.00,  1.00, 0.08),
+    "claude-3-opus":          (15.00, 75.00, 18.75, 1.50),
+    "claude-3-sonnet":        ( 3.00, 15.00,  3.75, 0.30),
+    "claude-3-haiku":         ( 0.25,  1.25,  0.30, 0.03),
+}
+
+
+def price_per_mtok_for_model(model):
+    """Return (in, out, cache_w, cache_r) USD per Mtok for a model id, or None.
+
+    Strips a trailing date suffix (e.g. `claude-opus-4-7-20260101`) and falls
+    back to family-only prefix matches so we still get a useful price for the
+    next minor revision of a model line before this table is updated.
+    """
+    if not model:
+        return None
+    if model in MODEL_PRICING_USD_PER_MTOK:
+        return MODEL_PRICING_USD_PER_MTOK[model]
+    # Strip date suffix (YYYYMMDD at the end)
+    parts = model.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 8:
+        if parts[0] in MODEL_PRICING_USD_PER_MTOK:
+            return MODEL_PRICING_USD_PER_MTOK[parts[0]]
+    # Prefix fallback: longest matching key
+    for key in sorted(MODEL_PRICING_USD_PER_MTOK, key=len, reverse=True):
+        if model.startswith(key):
+            return MODEL_PRICING_USD_PER_MTOK[key]
+    return None
 
 
 # ── DRS Estimation ───────────────────────────────────────────────────────────
@@ -406,7 +584,12 @@ examples:
         "--path",
         type=str,
         default=None,
-        help="Custom path to JSONL directory (default: ~/.claude/projects/)",
+        help="Custom path to JSONL directory (auto-detected if omitted)",
+    )
+    parser.add_argument(
+        "--detect",
+        action="store_true",
+        help="List all detected JSONL locations and exit (no stats shown)",
     )
     parser.add_argument(
         "--no-color",
@@ -420,16 +603,45 @@ examples:
         global _colors_on
         _colors_on = False
 
-    # Determine base directory
-    base_dir = args.path or os.path.expanduser("~/.claude/projects")
+    # --detect: scan + report candidates + exit.
+    if args.detect:
+        print_header()
+        found = suggest_jsonl_paths()
+        if not found:
+            print(f"  {c(Colors.RED, 'No Claude Code data found in any standard location.')}")
+            print("  Searched:")
+            for cand in DEFAULT_JSONL_CANDIDATES:
+                print(f"    {c(Colors.DIM, os.path.expanduser(cand))}")
+            print("\n  Pass --path /your/dir if your JSONL lives elsewhere.")
+            print()
+            sys.exit(1)
+        print(f"  {c(Colors.GREEN, 'Detected JSONL locations:')}\n")
+        for p, n in found:
+            print(f"    {p}  {c(Colors.DIM, f'({n} files)')}")
+        print()
+        if len(found) == 1:
+            print(f"  {c(Colors.DIM, 'Run codestrain (no flags) to use it.')}")
+        else:
+            print(f"  {c(Colors.DIM, 'Multiple locations found — pass --path to pick one.')}")
+        print()
+        sys.exit(0)
+
+    # Determine base directory: --path wins; otherwise auto-detect; otherwise legacy default.
+    if args.path:
+        base_dir = os.path.expanduser(args.path)
+    else:
+        detected = detect_jsonl_path()
+        base_dir = str(detected) if detected else os.path.expanduser("~/.claude/projects")
 
     if not os.path.isdir(base_dir):
         print_header()
         print(f"  {c(Colors.RED, 'No Claude Code data found.')}")
-        print(f"  Expected JSONL files in: {c(Colors.DIM, base_dir)}")
-        print(f"\n  {c(Colors.DIM, 'Start using Claude Code to generate session data.')}")
+        print(f"  Tried: {c(Colors.DIM, base_dir)}")
         print()
-        sys.exit(0)
+        print(f"  Run {c(Colors.CYAN, 'codestrain --detect')} to scan for other locations,")
+        print(f"  or {c(Colors.CYAN, 'codestrain --path /your/dir')} to point at a custom one.")
+        print()
+        sys.exit(1)
 
     # Find and parse JSONL files
     files = find_jsonl_files(base_dir, project_filter=args.project)
