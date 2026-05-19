@@ -54,27 +54,67 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
     steps:
-      # Wait briefly so the new sdist is queryable on PyPI's CDN.
+      # mislav/bump-homebrew-formula-action proved flaky against PyPI's
+      # /packages/source/ redirect (HTTP 404 on its HEAD probe even after
+      # the file is reachable via GET). Rolling our own bump is more
+      # reliable and easier to debug: query PyPI's JSON API for the
+      # canonical URL + sha256, then sed-update the formula and push.
+
       - name: Wait for PyPI propagation
-        run: sleep 30
+        run: sleep 60
 
-      - name: Open PR against codestrain/homebrew-tap
-        uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: codestrain
-          formula-path: Formula/codestrain.rb
-          homebrew-tap: codestrain/homebrew-tap
-          base-branch: main
-          # Compute download URL from the just-published PyPI sdist.
-          # mislav/bump-homebrew-formula-action auto-strips `v` prefix from
-          # github.ref_name, so v0.1.2 → 0.1.2 in the URL.
-          download-url: https://files.pythonhosted.org/packages/source/c/codestrain/codestrain-${{ github.ref_name }}.tar.gz
-          commit-message: |
-            codestrain {{version}}
+      - name: Fetch PyPI sdist metadata
+        id: pypi
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Looking up codestrain==$VERSION on PyPI..."
+          # Retry up to 6 times (1 min total) in case the metadata
+          # endpoint lags behind the file CDN.
+          for i in 1 2 3 4 5 6; do
+            BODY=$(curl -fsS "https://pypi.org/pypi/codestrain/$VERSION/json" 2>/dev/null) && break
+            echo "  attempt $i failed; sleeping 10s"
+            sleep 10
+          done
+          if [ -z "${BODY:-}" ]; then
+            echo "::error::PyPI metadata for codestrain==$VERSION never appeared"
+            exit 1
+          fi
+          URL=$(echo "$BODY" | jq -r '.urls[] | select(.packagetype=="sdist") | .url')
+          SHA=$(echo "$BODY" | jq -r '.urls[] | select(.packagetype=="sdist") | .digests.sha256')
+          echo "  url=$URL"
+          echo "  sha=$SHA"
+          {
+            echo "version=$VERSION"
+            echo "url=$URL"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
 
-            Auto-bumped by mislav/bump-homebrew-formula-action.
-            Source: https://github.com/codestrain/codestrain-cli/releases/tag/${{ github.ref_name }}
+      - name: Update Formula in codestrain/homebrew-tap
         env:
-          # Fine-grained PAT with `Contents: write` on codestrain/homebrew-tap.
-          # Stored as a repo secret in codestrain/codestrain-cli.
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.pypi.outputs.version }}
+          URL: ${{ steps.pypi.outputs.url }}
+          SHA: ${{ steps.pypi.outputs.sha }}
+        run: |
+          set -eu
+          git clone --depth 1 \
+            "https://x-access-token:${COMMITTER_TOKEN}@github.com/codestrain/homebrew-tap.git" tap
+          cd tap
+          # sed has to use a delimiter that doesn't appear in URLs (|).
+          sed -i -E "s|^  url \".*\"|  url \"${URL}\"|" Formula/codestrain.rb
+          sed -i -E "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" Formula/codestrain.rb
+          echo "=== updated formula ==="
+          head -12 Formula/codestrain.rb
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/codestrain.rb
+          if git diff --cached --quiet; then
+            echo "no formula change — skipping commit"
+            exit 0
+          fi
+          git commit -m "codestrain ${VERSION}
+
+          Auto-bumped from PyPI sdist for tag ${GITHUB_REF_NAME}.
+          Source: https://github.com/codestrain/codestrain-cli/releases/tag/${GITHUB_REF_NAME}"
+          git push
