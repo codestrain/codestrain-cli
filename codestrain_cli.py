@@ -20,6 +20,30 @@ from pathlib import Path
 
 # ── ANSI Colors ──────────────────────────────────────────────────────────────
 
+def _enable_windows_vt():
+    """Enable ANSI virtual-terminal processing on Windows conhost/cmd.
+
+    On non-Windows platforms this is a no-op and returns True.
+    On Windows, calls SetConsoleMode with ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    (0x0004) so escape sequences render as colors instead of raw `\\033[...m`
+    text. Returns False if the call fails — caller should disable colors.
+    Stdlib only (ctypes); no `colorama` dep.
+    """
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        ENABLE_VT = 0x0004
+        return bool(kernel32.SetConsoleMode(handle, mode.value | ENABLE_VT))
+    except Exception:
+        return False
+
+
 class Colors:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -33,12 +57,28 @@ class Colors:
 
     @staticmethod
     def enabled():
-        """Respect NO_COLOR and dumb terminal conventions."""
+        """Detect whether ANSI color output should be emitted.
+
+        Precedence (high → low):
+          1. NO_COLOR env var      → off  (per no-color.org)
+          2. TERM == "dumb"        → off
+          3. FORCE_COLOR / CLICOLOR_FORCE env var → on
+             (per force-color.org + bixense.com/clicolors, lets users pipe to
+              `less -R` or capture colored CI logs despite isatty()==False)
+          4. sys.stdout.isatty()   → on if attached to a real terminal
+
+        On Windows, ANSI VT processing is enabled via SetConsoleMode; if that
+        call fails, colors are silently disabled regardless of the above.
+        """
         if os.environ.get("NO_COLOR"):
             return False
         if os.environ.get("TERM") == "dumb":
             return False
-        return sys.stdout.isatty()
+        if os.environ.get("FORCE_COLOR") or os.environ.get("CLICOLOR_FORCE"):
+            return _enable_windows_vt()
+        if not sys.stdout.isatty():
+            return False
+        return _enable_windows_vt()
 
 
 _colors_on = Colors.enabled()
@@ -459,25 +499,79 @@ def format_tokens(count):
     return str(count)
 
 
-def print_header():
-    """Print the CodeStrain CLI header."""
-    print()
+def _terminal_cols(default=80):
+    """Return terminal width in columns; falls back to `default` if unknown.
+
+    Uses `os.get_terminal_size()` which checks the controlling TTY then
+    COLUMNS env var. Returns the default on OSError (no TTY, e.g. piped).
+    """
+    try:
+        return os.get_terminal_size().columns
+    except (OSError, ValueError):
+        return default
+
+
+def _print_logo_big():
+    """Print the full 5-line ASCII logo (needs ≥ 56 cols to render cleanly)."""
     print(c(Colors.AMBER, "   ______          __     _____ __             "))
     print(c(Colors.AMBER, "  / ____/___  ____/ /__  / ___// /__________ _( )___"))
     print(c(Colors.AMBER, " / /   / __ \\/ __  / _ \\ \\__ \\/ __/ ___/ __ `/ / __ \\"))
     print(c(Colors.AMBER, "/ /___/ /_/ / /_/ /  __/___/ / /_/ /  / /_/ / / / / /"))
     print(c(Colors.AMBER, "\\____/\\____/\\__._/\\___//____/\\__/_/   \\__._/_/_/ /_/"))
+
+
+def _print_logo_small():
+    """Print a one-line compact logo for 40-55 col terminals (tmux splits, etc.)."""
+    print(c(Colors.AMBER, "[ codestrain ]"))
+
+
+def print_header_adaptive(mode="auto"):
+    """Print the header with a logo sized for the terminal.
+
+    Modes:
+      auto  → terminal width: ≥56 = big, 40-55 = small, <40 = no logo
+      big   → force 5-line ASCII logo
+      small → force one-line `[ codestrain ]`
+      none  → skip the logo block entirely (tagline still prints)
+    """
     print()
+    if mode == "big":
+        _print_logo_big()
+    elif mode == "small":
+        _print_logo_small()
+    elif mode == "none":
+        pass
+    else:  # auto
+        cols = _terminal_cols(default=80)
+        if cols >= 56:
+            _print_logo_big()
+        elif cols >= 40:
+            _print_logo_small()
+        # else: skip logo entirely on cramped terminals
+    if mode != "none":
+        print()
     print(c(Colors.DIM, "  Your AI coding recovery score."))
     print()
 
 
+def print_header():
+    """Backwards-compatible wrapper — defaults to auto-detected logo size."""
+    print_header_adaptive("auto")
+
+
 def print_divider(label=""):
-    """Print a section divider."""
+    """Print a section divider that fits the terminal width.
+
+    Width = min(56, terminal_cols - 2) so dividers don't wrap on narrow
+    terminals (tmux splits, ≤ 56-col windows).
+    """
+    width = max(10, min(56, _terminal_cols(default=80) - 2))
     if label:
-        print(f"\n{c(Colors.DIM, '---')} {bold(label)} {c(Colors.DIM, '-' * max(1, 50 - len(label)))}")
+        # Room for "--- LABEL " then fill the rest with dashes.
+        fill = max(1, width - 4 - len(label) - 1)
+        print(f"\n{c(Colors.DIM, '---')} {bold(label)} {c(Colors.DIM, '-' * fill)}")
     else:
-        print(c(Colors.DIM, "-" * 56))
+        print(c(Colors.DIM, "-" * width))
 
 
 def print_session_summary(stats_list, label=""):
@@ -665,6 +759,13 @@ examples:
         action="store_true",
         help="Skip the per-project breakdown section entirely",
     )
+    parser.add_argument(
+        "--logo",
+        choices=("auto", "big", "small", "none"),
+        default="auto",
+        help="Logo variant: auto (default, adapts to terminal width), "
+             "big (5-line ASCII), small (one-line), or none (skip logo)",
+    )
 
     args = parser.parse_args()
 
@@ -674,7 +775,7 @@ examples:
 
     # --detect: scan + report candidates + exit.
     if args.detect:
-        print_header()
+        print_header_adaptive(args.logo)
         found = suggest_jsonl_paths()
         if not found:
             print(f"  {c(Colors.RED, 'No Claude Code data found in any standard location.')}")
@@ -703,7 +804,7 @@ examples:
         base_dir = str(detected) if detected else os.path.expanduser("~/.claude/projects")
 
     if not os.path.isdir(base_dir):
-        print_header()
+        print_header_adaptive(args.logo)
         print(f"  {c(Colors.RED, 'No Claude Code data found.')}")
         print(f"  Tried: {c(Colors.DIM, base_dir)}")
         print()
@@ -716,7 +817,7 @@ examples:
     files = find_jsonl_files(base_dir, project_filter=args.project)
 
     if not files:
-        print_header()
+        print_header_adaptive(args.logo)
         if args.project:
             print(f"  {c(Colors.YELLOW, f'No sessions found for project matching: {args.project}')}")
         else:
@@ -752,7 +853,7 @@ examples:
         project_stats[project_name].append(stats)
 
     # Display results
-    print_header()
+    print_header_adaptive(args.logo)
 
     time_label = "Today" if not args.all else "All Time"
     if args.project and not args.anonymize:
