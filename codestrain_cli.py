@@ -462,11 +462,11 @@ def format_tokens(count):
 def print_header():
     """Print the CodeStrain CLI header."""
     print()
-    print(c(Colors.AMBER, "  ______          __     _____ __             _"))
-    print(c(Colors.AMBER, " / ____/___  ____/ /__  / ___// /__________ _(_)___"))
-    print(c(Colors.AMBER, "/ /   / __ \\/ __  / _ \\ \\__ \\/ __/ ___/ __ `/ / __ \\"))
+    print(c(Colors.AMBER, "   ______          __     _____ __             "))
+    print(c(Colors.AMBER, "  / ____/___  ____/ /__  / ___// /__________ _( )___"))
+    print(c(Colors.AMBER, " / /   / __ \\/ __  / _ \\ \\__ \\/ __/ ___/ __ `/ / __ \\"))
     print(c(Colors.AMBER, "/ /___/ /_/ / /_/ /  __/___/ / /_/ /  / /_/ / / / / /"))
-    print(c(Colors.AMBER, "\\____/\\____/\\__,_/\\___//____/\\__/_/   \\__,_/_/_/ /_/"))
+    print(c(Colors.AMBER, "\\____/\\____/\\__._/\\___//____/\\__/_/   \\__._/_/_/ /_/"))
     print()
     print(c(Colors.DIM, "  Your AI coding recovery score."))
     print()
