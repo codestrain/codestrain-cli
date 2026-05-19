@@ -496,22 +496,41 @@ def print_session_summary(stats_list, label=""):
     for s in stats_list:
         all_models.update(s["models"])
 
-    # Estimate DRS
+    # Estimate DRS.
+    #
+    # The strain formula is per-day ("how strained are you today"). If we
+    # naively feed it the SUM of all hours across many days, the result is
+    # always 21/21 (the cap), which is meaningless for `--all` mode.
+    # Solution: compute average hours-per-active-day and feed that instead.
     total_hours = total_duration / 3600.0
     debug_ratio = total_errors / max(1, total_turns)
 
-    # Check for late night / weekend
-    is_late_night = False
-    is_weekend = False
-    for s in stats_list:
-        if s["end_time"]:
-            local_time = s["end_time"].astimezone()
-            if local_time.hour >= 22 or local_time.hour < 6:
-                is_late_night = True
-            if local_time.weekday() >= 5:
-                is_weekend = True
+    # Count distinct calendar days with at least one session.
+    active_days = {
+        s["start_time"].astimezone().date()
+        for s in stats_list
+        if s.get("start_time") is not None
+    }
+    num_days = max(1, len(active_days))
+    hours_per_day = total_hours / num_days
 
-    strain = estimate_strain(total_hours, debug_ratio, is_late_night, is_weekend)
+    # Late-night / weekend flags only fire if at least ~10% of the active
+    # days hit that pattern — otherwise a single weekend session a year ago
+    # would flip the flag forever in --all mode.
+    late_night_days = 0
+    weekend_days = 0
+    for s in stats_list:
+        if s.get("end_time"):
+            local = s["end_time"].astimezone()
+            if local.hour >= 22 or local.hour < 6:
+                late_night_days += 1
+            if local.weekday() >= 5:
+                weekend_days += 1
+    flag_threshold = max(1, num_days // 10)
+    is_late_night = late_night_days >= flag_threshold
+    is_weekend = weekend_days >= flag_threshold
+
+    strain = estimate_strain(hours_per_day, debug_ratio, is_late_night, is_weekend)
     recovery = estimate_recovery(strain, 8.0)  # assume 8h since last session
 
     drs_col = drs_color(recovery)
@@ -540,7 +559,11 @@ def print_session_summary(stats_list, label=""):
         print(f"  Models:    {c(Colors.DIM, models_str)}")
 
     print()
-    print(f"  {bold('DRS Estimate')}")
+    if num_days > 1:
+        print(f"  {bold('DRS Estimate')}  "
+              f"{c(Colors.DIM, f'(avg per active day · {num_days} days · {hours_per_day:.1f}h/day)')}")
+    else:
+        print(f"  {bold('DRS Estimate')}")
     print(f"  Strain:    {c(drs_col, f'{strain:.1f}')}/21")
     print(f"  Recovery:  {c(drs_col, f'{recovery:.0f}%')}")
     print(f"  Readiness: {readiness_label(recovery)}")
