@@ -1,0 +1,10 @@
+{"type": "user", "timestamp": "2026-05-19T14:00:00.000Z", "message": "investigate the crash"}
+{"type": "assistant", "timestamp": "2026-05-19T14:00:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 2000, "output_tokens": 600}, "costUSD": 0.08}
+{"type": "user", "timestamp": "2026-05-19T14:05:00.000Z", "message": "Error: NullPointerException in core handler"}
+{"type": "assistant", "timestamp": "2026-05-19T14:05:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 1500, "output_tokens": 400}, "costUSD": 0.06}
+{"type": "user", "timestamp": "2026-05-19T14:20:00.000Z", "message": "still failed, traceback unchanged"}
+{"type": "assistant", "timestamp": "2026-05-19T14:20:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 1800, "output_tokens": 500}, "costUSD": 0.07}
+{"type": "user", "timestamp": "2026-05-19T14:40:00.000Z", "message": "exception persists after retry"}
+{"type": "assistant", "timestamp": "2026-05-19T14:40:45.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 1600, "output_tokens": 450}, "costUSD": 0.065}
+{"type": "user", "timestamp": "2026-05-19T15:00:00.000Z", "message": "fixed, thanks"}
+{"type": "assistant", "timestamp": "2026-05-19T15:00:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 400, "output_tokens": 90}, "costUSD": 0.015}

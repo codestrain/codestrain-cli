@@ -1,0 +1,6 @@
+{"type": "user", "timestamp": "2026-05-19T10:00:00.000Z", "message": "build me a hello world", "sessionId": "s001", "cwd": "/Users/test/projectA"}
+{"type": "assistant", "timestamp": "2026-05-19T10:00:15.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 1200, "output_tokens": 450}, "costUSD": 0.05}
+{"type": "user", "timestamp": "2026-05-19T10:01:00.000Z", "message": "looks good"}
+{"type": "assistant", "timestamp": "2026-05-19T10:01:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 800, "output_tokens": 220}, "costUSD": 0.02}
+{"type": "user", "timestamp": "2026-05-19T10:04:30.000Z", "message": "ship it"}
+{"type": "assistant", "timestamp": "2026-05-19T10:05:00.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 600, "output_tokens": 80}, "costUSD": 0.01}

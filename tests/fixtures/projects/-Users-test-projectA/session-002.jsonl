@@ -1,0 +1,5 @@
+{"type": "user", "timestamp": "2026-05-19T11:00:00.000Z", "message": "fix this bug"}
+{"type": "assistant", "timestamp": "2026-05-19T11:00:20.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 500, "output_tokens": 90}, "costUSD": 0.015}
+this is a deliberately malformed JSON line — the parser must skip it without dying
+{"type": "user", "timestamp": "2026-05-19T11:01:00.000Z", "message": "still broken, traceback in logs"}
+{"type": "assistant", "timestamp": "2026-05-19T11:01:30.000Z", "model": "claude-opus-4-7", "usage": {"input_tokens": 700, "output_tokens": 150}, "costUSD": 0.025}
