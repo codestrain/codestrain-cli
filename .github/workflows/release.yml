@@ -47,3 +47,34 @@ jobs:
 
       - name: Publish to PyPI via Trusted Publisher
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  bump-homebrew:
+    name: Bump Homebrew Formula
+    needs: publish
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
+    steps:
+      # Wait briefly so the new sdist is queryable on PyPI's CDN.
+      - name: Wait for PyPI propagation
+        run: sleep 30
+
+      - name: Open PR against codestrain/homebrew-tap
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: codestrain
+          formula-path: Formula/codestrain.rb
+          homebrew-tap: codestrain/homebrew-tap
+          base-branch: main
+          # Compute download URL from the just-published PyPI sdist.
+          # mislav/bump-homebrew-formula-action auto-strips `v` prefix from
+          # github.ref_name, so v0.1.2 → 0.1.2 in the URL.
+          download-url: https://files.pythonhosted.org/packages/source/c/codestrain/codestrain-${{ github.ref_name }}.tar.gz
+          commit-message: |
+            codestrain {{version}}
+
+            Auto-bumped by mislav/bump-homebrew-formula-action.
+            Source: https://github.com/codestrain/codestrain-cli/releases/tag/${{ github.ref_name }}
+        env:
+          # Fine-grained PAT with `Contents: write` on codestrain/homebrew-tap.
+          # Stored as a repo secret in codestrain/codestrain-cli.
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

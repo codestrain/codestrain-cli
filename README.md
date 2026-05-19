@@ -17,24 +17,32 @@ CodeStrain parses the Claude Code JSONL session logs already on your disk (`~/.c
 
 ## Install
 
-The CLI is a single command, but `pip install codestrain` alone often leaves the binary off your `$PATH` (macOS / many Linuxes ship Python under PEP 668). Use **pipx** or **uv** — they put the command on `$PATH` and isolate the env:
+The CLI is a single command. Pick the install path your machine prefers — all three put `codestrain` on your `$PATH`:
 
 ```bash
-# pipx — recommended for global use
+# macOS — recommended (Homebrew)
+brew install codestrain/tap/codestrain
+codestrain --help
+```
+
+```bash
+# any OS — pipx, isolated venv + symlink on PATH
 pipx install codestrain
 codestrain --help
 ```
 
 ```bash
-# uv tool — fastest, same outcome
+# any OS — uv tool, fastest
 uv tool install codestrain
 codestrain --help
 ```
 
 ```bash
-# one-liner — detects python, picks pipx/uv/pip --user automatically
+# one-liner installer — detects pipx/uv/pip and adds PATH automatically
 curl -fsSL codestrain.dev/install | sh
 ```
+
+`pip install codestrain` works too, but leaves the binary off your `$PATH` on macOS (PEP 668 / user-install convention). See troubleshooting below.
 
 <details>
 <summary>If <code>codestrain: command not found</code> after <code>pip install codestrain</code></summary>
