@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
 
+# Opt into Node.js 24 for JS-based actions; default will flip on 2026-06-02.
+# See https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build distributions
