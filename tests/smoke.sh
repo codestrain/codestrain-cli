@@ -107,6 +107,13 @@ out=$("$PY" "$CLI" --path "$FIXTURES" --all --project projectA --no-color 2>&1)
 # format_tokens compacts to "3.8K"-style — assert the K
 contains "$out" "3.8K" "expected ~3800 input tokens for projectA (compact = 3.8K)"
 
+# 9. --share emits a codestrain.dev/s/ URL and implies --anonymize.
+out=$("$PY" "$CLI" --path "$FIXTURES" --all --share 2>&1)
+contains "$out" "https://codestrain.dev/s/?d=" "--share prints shareable URL"
+contains "$out" "project-1"                    "--share implies --anonymize (project-1)"
+not_contains "$out" "projectA"                 "--share scrubs real project names"
+not_contains "$out" "projectB"                 "--share scrubs real project names"
+
 # ----------------------------------------------------------------------------
 # summary
 # ----------------------------------------------------------------------------

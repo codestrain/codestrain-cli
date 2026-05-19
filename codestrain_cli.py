@@ -707,6 +707,49 @@ def print_project_breakdown(project_stats, anonymize=False):
     print()
 
 
+# ── Share encoding ───────────────────────────────────────────────────────────
+#
+# `codestrain --share` produces a single self-contained URL that anyone can
+# open to see the same anonymized report. No server, no upload, no cookies —
+# the whole report is gzip+base64-encoded into the URL query string. Decoded
+# client-side by codestrain.dev/s/index.html.
+
+SHARE_BASE_URL = "https://codestrain.dev/s/"
+
+
+def build_share_url(text: str, base: str = SHARE_BASE_URL) -> str:
+    """Encode `text` into a self-contained share URL.
+
+    Pipeline: utf-8 → gzip (level 9, deterministic) → base64-urlsafe (strip `=`
+    padding). The frontend reverses this with DecompressionStream('gzip').
+    Average codestrain --all output (~1.5 KB raw) compresses to ~600 B → ~800 B
+    base64 → final URL ~ 850 B. Well within all known browser URL limits
+    (Chrome / Safari / Firefox / curl all accept up to ~32 KB).
+    """
+    import base64
+    import gzip
+    payload = gzip.compress(text.encode("utf-8"), compresslevel=9, mtime=0)
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    return f"{base.rstrip('/')}/?d={encoded}"
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Best-effort clipboard copy. Returns True on success, False if no
+    suitable system command is available. Never raises.
+    """
+    import shutil
+    import subprocess
+    for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+        if shutil.which(cmd[0]):
+            try:
+                p = subprocess.run(cmd, input=text.encode("utf-8"), timeout=2)
+                if p.returncode == 0:
+                    return True
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+    return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -766,8 +809,20 @@ examples:
         help="Logo variant: auto (default, adapts to terminal width), "
              "big (5-line ASCII), small (one-line), or none (skip logo)",
     )
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Generate a shareable codestrain.dev URL with anonymized stats "
+             "(implies --anonymize --no-color; nothing is uploaded — all data "
+             "is encoded in the URL itself)",
+    )
 
     args = parser.parse_args()
+
+    # --share is a shortcut that anonymizes, strips color, then prints a URL.
+    if args.share:
+        args.anonymize = True
+        args.no_color = True
 
     if args.no_color:
         global _colors_on
@@ -852,23 +907,43 @@ examples:
             project_stats[project_name] = []
         project_stats[project_name].append(stats)
 
-    # Display results
-    print_header_adaptive(args.logo)
+    # Display results — capture stdout into a buffer if --share, so we can
+    # encode the rendered report into a URL after the run.
+    import contextlib
+    import io as _io
 
-    time_label = "Today" if not args.all else "All Time"
-    if args.project and not args.anonymize:
-        time_label += f" (project: {args.project})"
-    elif args.project and args.anonymize:
-        time_label += " (filtered)"
+    def _render_to(stream):
+        with contextlib.redirect_stdout(stream):
+            print_header_adaptive(args.logo)
+            time_label = "Today" if not args.all else "All Time"
+            if args.project and not args.anonymize:
+                time_label += f" (project: {args.project})"
+            elif args.project and args.anonymize:
+                time_label += " (filtered)"
+            print_divider(time_label)
+            print()
+            print_session_summary(all_stats)
+            if len(project_stats) > 1 and not args.no_breakdown:
+                print_project_breakdown(project_stats, anonymize=args.anonymize)
+            print()
 
-    print_divider(time_label)
-    print()
-    print_session_summary(all_stats)
-
-    if len(project_stats) > 1 and not args.no_breakdown:
-        print_project_breakdown(project_stats, anonymize=args.anonymize)
-
-    print()
+    if args.share:
+        buf = _io.StringIO()
+        _render_to(buf)
+        report_text = buf.getvalue()
+        # Print the report to stdout so the user sees what they're sharing
+        sys.stdout.write(report_text)
+        share_url = build_share_url(report_text)
+        print()
+        print(f"  Shareable URL ({len(share_url)} chars):")
+        print(f"  {share_url}")
+        print()
+        # Best-effort clipboard copy on macOS / Linux
+        if _copy_to_clipboard(share_url):
+            print("  (copied to clipboard)")
+            print()
+    else:
+        _render_to(sys.stdout)
 
 
 if __name__ == "__main__":

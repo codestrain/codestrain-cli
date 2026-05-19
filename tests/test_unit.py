@@ -145,3 +145,54 @@ def test_format_cost_dollars(cli, cost, expected_prefix):
 def test_format_tokens_compact(cli, n, expected_substr):
     out = cli.format_tokens(n)
     assert expected_substr in out
+
+
+# ─── Share encoding ─────────────────────────────────────────────────────────
+
+def test_share_url_round_trip(cli):
+    """gzip + base64-urlsafe encoder must round-trip a real report string."""
+    import base64
+    import gzip
+    sample = (
+        "--- All Time ----\n"
+        "  Sessions: 1454\n"
+        "  Duration: 137h 21m\n"
+        "  Cost: $21948.61\n"
+    )
+    url = cli.build_share_url(sample)
+    assert url.startswith("https://codestrain.dev/s/?d=")
+    encoded = url.split("?d=", 1)[1]
+    # Restore stripped padding + base64-urlsafe → bytes → gunzip → text.
+    pad = "=" * (-len(encoded) % 4)
+    raw = base64.urlsafe_b64decode(encoded + pad)
+    decoded = gzip.decompress(raw).decode("utf-8")
+    assert decoded == sample
+
+
+def test_share_url_unicode_safe(cli):
+    """Non-ASCII content (Cyrillic, emoji, currency) must survive the trip."""
+    import base64
+    import gzip
+    sample = "Сессий: 1454 · стоимость €18 950 / $21 948 · 🟢 recovery 82%"
+    url = cli.build_share_url(sample)
+    encoded = url.split("?d=", 1)[1]
+    pad = "=" * (-len(encoded) % 4)
+    raw = base64.urlsafe_b64decode(encoded + pad)
+    assert gzip.decompress(raw).decode("utf-8") == sample
+
+
+def test_share_url_compact_for_typical_report(cli):
+    """A realistic 1.5 KB report should encode to under ~1 KB URL."""
+    # 30 lines × 50 chars = 1500 bytes (close to real --all output).
+    sample = "\n".join(f"  line {i:02d}: project-{i} 12h 34m $123.45" for i in range(30))
+    url = cli.build_share_url(sample)
+    # Comfortably under 32 KB (the conservative browser URL limit).
+    assert len(url) < 2_000
+    # Should compress reasonably — the line template is highly repetitive.
+    assert len(url) < len(sample)
+
+
+def test_share_url_deterministic(cli):
+    """Same input → same URL across calls (mtime=0 in gzip header)."""
+    text = "hello world\n"
+    assert cli.build_share_url(text) == cli.build_share_url(text)
