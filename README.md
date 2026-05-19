@@ -17,20 +17,47 @@ CodeStrain parses the Claude Code JSONL session logs already on your disk (`~/.c
 
 ## Install
 
+The CLI is a single command, but `pip install codestrain` alone often leaves the binary off your `$PATH` (macOS / many Linuxes ship Python under PEP 668). Use **pipx** or **uv** — they put the command on `$PATH` and isolate the env:
+
 ```bash
-# one-liner (recommended)
+# pipx — recommended for global use
+pipx install codestrain
+codestrain --help
+```
+
+```bash
+# uv tool — fastest, same outcome
+uv tool install codestrain
+codestrain --help
+```
+
+```bash
+# one-liner — detects python, picks pipx/uv/pip --user automatically
 curl -fsSL codestrain.dev/install | sh
 ```
 
-```bash
-# pipx
-pipx install codestrain
-```
+<details>
+<summary>If <code>codestrain: command not found</code> after <code>pip install codestrain</code></summary>
+
+That's the macOS / PEP 668 quirk — pip installed the wheel but didn't put the entry-point on PATH. Three fixes, in order of preference:
 
 ```bash
-# uv
-uv tool install codestrain
+# (a) run it as a module — works without any PATH change
+python3 -m codestrain_cli --all
+
+# (b) switch to pipx (installs in isolated venv, fixes PATH)
+brew install pipx        # or:  python3 -m pip install --user pipx
+pipx ensurepath          # adds ~/.local/bin to PATH
+pipx install codestrain
+
+# (c) find where pip put the binary and add that dir to PATH
+pip show -f codestrain | grep -E 'bin/codestrain'
+# typical macOS user-install path:
+echo 'export PATH="$HOME/Library/Python/3.11/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
+
+</details>
 
 ## Quick start
 
