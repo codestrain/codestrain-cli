@@ -63,14 +63,16 @@ contains "$out" "--path"     "--help mentions --path"
 contains "$out" "--no-color" "--help mentions --no-color"
 
 # 2. Default run (today's window) against fixtures, no color.
+# Only asserts the "Today" header — DRS visibility depends on whether fixtures
+# happen to fall on the test's wall-clock date, which is time-fragile in CI.
 out=$("$PY" "$CLI" --path "$FIXTURES" --no-color 2>&1)
 contains "$out" "Today" "default run shows 'Today' section"
-contains "$out" "DRS Estimate" "default run shows DRS Estimate"
 
-# 3. --all aggregates everything across both fixture projects.
+# 3. --all aggregates everything and always has enough data for DRS.
 out=$("$PY" "$CLI" --path "$FIXTURES" --all --no-color 2>&1)
 contains "$out" "All Time" "--all shows 'All Time' label"
 contains "$out" "Per-Project Breakdown" "--all shows per-project breakdown"
+contains "$out" "DRS Estimate" "--all shows DRS Estimate"
 
 # 4. --project filter keeps projectA, drops projectB.
 out=$("$PY" "$CLI" --path "$FIXTURES" --all --project projectA --no-color 2>&1)
