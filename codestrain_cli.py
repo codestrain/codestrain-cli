@@ -95,6 +95,22 @@ def bold(text):
     return c(Colors.BOLD, text)
 
 
+def hyperlink(url, text=None):
+    """Wrap `url` in an OSC 8 escape so terminals make it clickable.
+
+    Supported by iTerm2, macOS Terminal, WezTerm, Kitty, Alacritty, Windows
+    Terminal, VSCode terminal, and most modern emulators. Terminals that
+    don't understand OSC 8 silently drop the escape (they don't print it as
+    garbage) so this is safe to emit unconditionally when colors are on.
+    Falls back to plain text when colors are off (CI logs, pipes, etc.) —
+    those contexts shouldn't have terminal-only escapes anyway.
+    """
+    label = text if text is not None else url
+    if not _colors_on:
+        return label
+    return f"\033]8;;{url}\033\\{label}\033]8;;\033\\"
+
+
 # ── DRS Color ────────────────────────────────────────────────────────────────
 
 def drs_color(recovery):
@@ -733,6 +749,88 @@ def build_share_url(text: str, base: str = SHARE_BASE_URL) -> str:
     return f"{base.rstrip('/')}/?d={encoded}"
 
 
+# ── Spinner ──────────────────────────────────────────────────────────────────
+#
+# Classic `- \ | /` rotation with a rest-themed phrase. Plays while we parse
+# JSONL on big histories (the 1-3 second silent pause is the worst part of the
+# CLI). Stdlib only — no `yaspin` / `halo` / `rich` dependency.
+
+SPINNER_FRAMES = "-\\|/"
+
+SPINNER_PHRASES = (
+    "parsing logs so you don't have to, slowly",
+    "doing absolutely nothing, and crushing it",
+    "the AI is doing it, I'm at the beach",
+    "rate-limiting myself before the universe does",
+    "nap-driven development in progress",
+    "set status: emotionally unavailable to my linter",
+    "romanticizing this loading bar",
+    "pretend I'm an out-of-office autoreply",
+    "iced coffee, AC on, deadlines elsewhere",
+    "touched grass once, billing for the week",
+    "running on decaf and delusion",
+)
+
+
+class Spinner:
+    """Context-manager spinner. No-op if stdout isn't a TTY or colors are off.
+
+    Picks one phrase at random per run; on operations >3s, rotates to a fresh
+    phrase every ~3s. Hides the cursor while running, restores on exit
+    (including KeyboardInterrupt — try/finally semantics via __exit__).
+    """
+
+    def __init__(self):
+        import random
+        self._stop = None
+        self._thread = None
+        self._active = _colors_on and sys.stdout.isatty()
+        self._phrase = random.choice(SPINNER_PHRASES)
+        self._random = random
+
+    def __enter__(self):
+        if not self._active:
+            return self
+        import threading
+        import time
+        self._time = time
+        self._stop = threading.Event()
+        sys.stdout.write("\033[?25l")  # hide cursor
+        sys.stdout.flush()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self):
+        i = 0
+        phrase = self._phrase
+        start = self._time.monotonic()
+        last_rotate = start
+        while not self._stop.is_set():
+            frame = SPINNER_FRAMES[i % 4]
+            line = f"  {c(Colors.YELLOW, frame)} {c(Colors.DIM, phrase)}"
+            sys.stdout.write(f"\r{line}\033[K")
+            sys.stdout.flush()
+            now = self._time.monotonic()
+            if now - last_rotate > 3.0:
+                phrase = self._random.choice(
+                    [p for p in SPINNER_PHRASES if p != phrase]
+                )
+                last_rotate = now
+            i += 1
+            self._stop.wait(0.08)
+
+    def __exit__(self, *exc):
+        if not self._active:
+            return False
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=0.2)
+        sys.stdout.write("\r\033[K\033[?25h")  # clear line, show cursor
+        sys.stdout.flush()
+        return False
+
+
 def _copy_to_clipboard(text: str) -> bool:
     """Best-effort clipboard copy. Returns True on success, False if no
     suitable system command is available. Never raises.
@@ -813,16 +911,17 @@ examples:
         "--share",
         action="store_true",
         help="Generate a shareable codestrain.dev URL with anonymized stats "
-             "(implies --anonymize --no-color; nothing is uploaded — all data "
-             "is encoded in the URL itself)",
+             "(implies --anonymize; nothing is uploaded — all data is encoded "
+             "in the URL itself, and ANSI colors are preserved in the web view)",
     )
 
     args = parser.parse_args()
 
-    # --share is a shortcut that anonymizes, strips color, then prints a URL.
+    # --share is a shortcut that anonymizes and prints a URL. Colors are kept
+    # in the encoded payload — the web viewer at codestrain.dev/s parses ANSI
+    # escapes back to CSS so the shared report looks the same as the terminal.
     if args.share:
         args.anonymize = True
-        args.no_color = True
 
     if args.no_color:
         global _colors_on
@@ -880,32 +979,35 @@ examples:
         print()
         sys.exit(0)
 
-    # Parse all files and collect stats
+    # Parse all files and collect stats. Spinner during the I/O — JSONL
+    # parsing on big histories (1000+ sessions) is the most visible silent
+    # pause in the CLI.
     today = datetime.date.today()
     all_stats = []
     project_stats = {}
 
-    for project_name, file_path in files:
-        events = parse_jsonl(file_path)
-        if not events:
-            continue
-
-        stats = extract_session_stats(events)
-
-        # Filter to today if not --all
-        if not args.all and stats["start_time"]:
-            session_date = stats["start_time"].astimezone().date()
-            if session_date != today:
+    with Spinner():
+        for project_name, file_path in files:
+            events = parse_jsonl(file_path)
+            if not events:
                 continue
 
-        if stats["turn_count"] == 0 and stats["duration_seconds"] == 0:
-            continue
+            stats = extract_session_stats(events)
 
-        all_stats.append(stats)
+            # Filter to today if not --all
+            if not args.all and stats["start_time"]:
+                session_date = stats["start_time"].astimezone().date()
+                if session_date != today:
+                    continue
 
-        if project_name not in project_stats:
-            project_stats[project_name] = []
-        project_stats[project_name].append(stats)
+            if stats["turn_count"] == 0 and stats["duration_seconds"] == 0:
+                continue
+
+            all_stats.append(stats)
+
+            if project_name not in project_stats:
+                project_stats[project_name] = []
+            project_stats[project_name].append(stats)
 
     # Display results — capture stdout into a buffer if --share, so we can
     # encode the rendered report into a URL after the run.
@@ -936,7 +1038,7 @@ examples:
         share_url = build_share_url(report_text)
         print()
         print(f"  Shareable URL ({len(share_url)} chars):")
-        print(f"  {share_url}")
+        print(f"  {c(Colors.CYAN, hyperlink(share_url))}")
         print()
         # Best-effort clipboard copy on macOS / Linux
         if _copy_to_clipboard(share_url):
