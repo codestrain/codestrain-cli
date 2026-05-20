@@ -63,10 +63,17 @@ contains "$out" "--path"     "--help mentions --path"
 contains "$out" "--no-color" "--help mentions --no-color"
 
 # 2. Default run (today's window) against fixtures, no color.
-# Only asserts the "Today" header — DRS visibility depends on whether fixtures
-# happen to fall on the test's wall-clock date, which is time-fragile in CI.
+# Fixtures ship with a fixed timestamp, so on most days the auto-fallback
+# kicks in and we render the All-Time view with a hint. Either outcome is
+# valid — what matters is that we always reach a useful section.
 out=$("$PY" "$CLI" --path "$FIXTURES" --no-color 2>&1)
-contains "$out" "Today" "default run shows 'Today' section"
+if printf '%s' "$out" | grep -qE 'Today|All Time'; then
+    ok "default run renders Today or All Time section"
+else
+    ng "default run renders Today or All Time section" "neither header found"
+fi
+# On any day other than the fixtures' date, the fallback hint must appear.
+contains "$out" "showing all-time stats" "auto-fallback hint when today is empty"
 
 # 3. --all aggregates everything and always has enough data for DRS.
 out=$("$PY" "$CLI" --path "$FIXTURES" --all --no-color 2>&1)

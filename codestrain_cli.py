@@ -982,9 +982,18 @@ examples:
     # Parse all files and collect stats. Spinner during the I/O — JSONL
     # parsing on big histories (1000+ sessions) is the most visible silent
     # pause in the CLI.
+    #
+    # We parse everything once and then decide between Today and All Time
+    # views in-memory. Two reasons:
+    #   1. "Today" is filtered by LAST activity (end_time), not first event,
+    #      so a session that started yesterday at 23:55 and continued today
+    #      still counts as today's work — matches user intuition of
+    #      "what did I do today".
+    #   2. If --all wasn't passed and today turns out empty, we silently
+    #      fall back to the all-time view with a hint, instead of leaving
+    #      the user staring at an empty screen.
     today = datetime.date.today()
-    all_stats = []
-    project_stats = {}
+    scanned = []  # (project_name, stats) for everything that parsed cleanly
 
     with Spinner():
         for project_name, file_path in files:
@@ -993,21 +1002,35 @@ examples:
                 continue
 
             stats = extract_session_stats(events)
-
-            # Filter to today if not --all
-            if not args.all and stats["start_time"]:
-                session_date = stats["start_time"].astimezone().date()
-                if session_date != today:
-                    continue
-
             if stats["turn_count"] == 0 and stats["duration_seconds"] == 0:
                 continue
 
-            all_stats.append(stats)
+            scanned.append((project_name, stats))
 
-            if project_name not in project_stats:
-                project_stats[project_name] = []
-            project_stats[project_name].append(stats)
+    def _is_today(stats):
+        # Prefer end_time — that's the LAST activity in the session and is
+        # what "modified today" means to a human. Fall back to start_time
+        # only when no end_time was recoverable from the JSONL.
+        ts = stats.get("end_time") or stats.get("start_time")
+        return ts is not None and ts.astimezone().date() == today
+
+    fallback_hint = None
+    if args.all:
+        selected = scanned
+    else:
+        today_scoped = [(p, s) for p, s in scanned if _is_today(s)]
+        if today_scoped:
+            selected = today_scoped
+        else:
+            selected = scanned
+            args.all = True  # so the rest of the pipeline labels & filters correctly
+            if selected:
+                fallback_hint = "No sessions today — showing all-time stats instead."
+
+    all_stats = [s for _, s in selected]
+    project_stats = {}
+    for project_name, stats in selected:
+        project_stats.setdefault(project_name, []).append(stats)
 
     # Display results — capture stdout into a buffer if --share, so we can
     # encode the rendered report into a URL after the run.
@@ -1024,6 +1047,9 @@ examples:
                 time_label += " (filtered)"
             print_divider(time_label)
             print()
+            if fallback_hint:
+                print(f"  {c(Colors.DIM, fallback_hint)}")
+                print()
             print_session_summary(all_stats)
             if len(project_stats) > 1 and not args.no_breakdown:
                 print_project_breakdown(project_stats, anonymize=args.anonymize)
