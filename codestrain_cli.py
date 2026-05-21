@@ -188,13 +188,31 @@ def decode_project_name(encoded):
 
 # ── JSONL Parsing ────────────────────────────────────────────────────────────
 
-def find_jsonl_files(base_dir, project_filter=None):
+# Tooling probe directories. Menu-bar utilities like ClaudeBar and CodexBar
+# spawn diagnostic Claude sessions from their own Application Support dirs,
+# which get logged into ~/.claude/projects/ and show up as "Probe" /
+# "ClaudeProbe" pseudo-projects in the breakdown. They aren't real user
+# coding work, so we filter them out by default. --include-probes opts in.
+PROBE_DIR_MARKERS = (
+    "ClaudeBar-Probe",
+    "CodexBar-ClaudeProbe",
+)
+
+
+def is_probe_directory(encoded_dir: str) -> bool:
+    return any(marker in encoded_dir for marker in PROBE_DIR_MARKERS)
+
+
+def find_jsonl_files(base_dir, project_filter=None, include_probes=False):
     """Walk the JSONL root and return list of (project_name, file_path).
 
     Project name preference:
       1. The first `cwd` field seen inside the first event of the file
          (decoded to a clean basename, e.g. "codestrain").
       2. Fallback: decoded directory name (-Users-foo-bar-baz → baz).
+
+    By default, tooling probe directories (ClaudeBar / CodexBar diagnostic
+    sessions) are skipped — pass include_probes=True to keep them.
     """
     base = Path(base_dir)
     if not base.exists():
@@ -205,6 +223,9 @@ def find_jsonl_files(base_dir, project_filter=None):
         rel = jsonl.relative_to(base)
         parts = list(rel.parts)
         encoded_dir = parts[0] if len(parts) >= 2 else "unknown"
+
+        if not include_probes and is_probe_directory(encoded_dir):
+            continue
 
         # Try to read `cwd` from the first parseable event in the file
         project_name = None
@@ -914,6 +935,12 @@ examples:
              "(implies --anonymize; nothing is uploaded — all data is encoded "
              "in the URL itself, and ANSI colors are preserved in the web view)",
     )
+    parser.add_argument(
+        "--include-probes",
+        action="store_true",
+        help="Include diagnostic sessions from menu-bar tools (ClaudeBar, "
+             "CodexBar). Excluded by default since they're not user work.",
+    )
 
     args = parser.parse_args()
 
@@ -968,7 +995,11 @@ examples:
         sys.exit(1)
 
     # Find and parse JSONL files
-    files = find_jsonl_files(base_dir, project_filter=args.project)
+    files = find_jsonl_files(
+        base_dir,
+        project_filter=args.project,
+        include_probes=args.include_probes,
+    )
 
     if not files:
         print_header_adaptive(args.logo)
