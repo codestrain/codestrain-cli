@@ -731,20 +731,39 @@ def print_project_breakdown(project_stats, anonymize=False):
         reverse=True,
     )
 
+    # Pre-compute each row's plain (uncoloured) text so we can size columns
+    # off the visible width. Padding inside an f-string field on already-
+    # coloured strings doesn't work: ANSI escapes count toward the width
+    # spec and silently eat the padding, which leaves the breakdown jagged.
+    rows = []
     for i, (project, stats_list) in enumerate(sorted_projects, start=1):
         total_duration = sum(s["duration_seconds"] for s in stats_list)
         total_cost = sum(s["total_cost"] for s in stats_list)
         total_turns = sum(s["turn_count"] for s in stats_list)
 
         if anonymize:
-            project_display = f"project-{i}"
+            name = f"project-{i}"
         else:
-            project_display = project[:30] + "..." if len(project) > 30 else project
+            name = project[:30] + "..." if len(project) > 30 else project
+
+        rows.append((
+            name,
+            format_duration(total_duration),
+            str(total_turns),
+            format_cost(total_cost),
+        ))
+
+    name_w  = max(len(r[0]) for r in rows)
+    dur_w   = max(len(r[1]) for r in rows)
+    turns_w = max(len(r[2]) for r in rows)
+    cost_w  = max(len(r[3]) for r in rows)
+
+    for name, dur, turns, cost in rows:
         print(
-            f"  {c(Colors.WHITE, project_display):<36}"
-            f"{bold(format_duration(total_duration)):>10}  "
-            f"{c(Colors.CYAN, str(total_turns)):>6} turns  "
-            f"{c(Colors.AMBER, format_cost(total_cost)):>8}"
+            f"  {c(Colors.WHITE, name.ljust(name_w))}  "
+            f"{bold(dur.rjust(dur_w))}  "
+            f"{c(Colors.CYAN, turns.rjust(turns_w))} turns  "
+            f"{c(Colors.AMBER, cost.rjust(cost_w))}"
         )
 
     print()
