@@ -17,6 +17,9 @@ import os
 import sys
 from pathlib import Path
 
+# Keep in sync with pyproject.toml [project].version at every release.
+__version__ = "0.1.8"
+
 
 # ── ANSI Colors ──────────────────────────────────────────────────────────────
 
@@ -590,7 +593,7 @@ def print_header_adaptive(mode="auto"):
         # else: skip logo entirely on cramped terminals
     if mode != "none":
         print()
-    print(c(Colors.DIM, "  Your AI coding recovery score."))
+    print(c(Colors.DIM, f"  Your AI coding recovery score.  v{__version__}"))
     print()
 
 
