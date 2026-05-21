@@ -135,13 +135,16 @@ def readiness_label(recovery):
 
 # Candidate locations where Claude Code might store JSONL. First hit wins.
 DEFAULT_JSONL_CANDIDATES = (
-    "~/.claude/projects",
-    "~/Library/Application Support/Claude/projects",
-    "~/Library/Application Support/ClaudeBar-Probe",
-    "~/Library/Application Support/CodexBar-ClaudeProbe",
-    "~/.config/claude/projects",       # Linux fallback
-    "~/AppData/Roaming/Claude/projects",  # Windows fallback
+    "~/.claude/projects",                        # Claude Code CLI (macOS / Linux)
+    "~/Library/Application Support/Claude/projects",  # Claude Desktop on macOS
+    "~/.config/claude/projects",                 # XDG / Linux fallback
+    "~/AppData/Roaming/Claude/projects",         # Windows fallback
 )
+# Note: ClaudeBar / CodexBar do NOT write their own JSONLs to disk; they
+# invoke `claude` CLI as a subprocess, which logs into ~/.claude/projects/
+# under an encoded path containing "ClaudeBar-Probe" or "CodexBar-ClaudeProbe".
+# Those entries get filtered later via PROBE_DIR_MARKERS so they don't
+# inflate session counts. No need to list them as data sources here.
 
 
 def detect_jsonl_path():

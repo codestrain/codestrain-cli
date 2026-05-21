@@ -1,6 +1,6 @@
 [project]
 name = "codestrain"
-version = "0.1.7"
+version = "0.1.8"
 description = "Your AI coding recovery score, from the terminal."
 requires-python = ">=3.9"
 readme = "README.md"
