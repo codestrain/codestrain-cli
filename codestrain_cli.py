@@ -689,10 +689,15 @@ def print_session_summary(stats_list, label=""):
     print(f"  Tokens:    {c(Colors.CYAN, format_tokens(total_input))} in / {c(Colors.CYAN, format_tokens(total_output))} out")
     print(f"  Cost:      {c(Colors.AMBER, format_cost(total_cost))}")
 
-    if all_models:
-        models_str = ", ".join(sorted(all_models)[:3])
-        if len(all_models) > 3:
-            models_str += f" +{len(all_models) - 3} more"
+    # Hide "<synthetic>" from the displayed list: it's not a real model, just
+    # Claude Code's marker for locally-fabricated events (cached API errors,
+    # interrupted turns, no-response slash commands). Token/turn counts still
+    # include them — only the user-facing Models row is filtered.
+    display_models = sorted(m for m in all_models if m != "<synthetic>")
+    if display_models:
+        models_str = ", ".join(display_models[:3])
+        if len(display_models) > 3:
+            models_str += f" +{len(display_models) - 3} more"
         print(f"  Models:    {c(Colors.DIM, models_str)}")
 
     print()
