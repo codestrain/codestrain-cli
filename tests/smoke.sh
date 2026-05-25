@@ -158,6 +158,13 @@ contains "$out" "\"scope\": \"today\"" "--json (no --all) keeps scope=today"
 contains "$out" "\"sessions\": 0"      "--json (no --all) reports empty today"
 not_contains "$out" "showing all-time" "--json suppresses fallback hint"
 
+# 14. cost_usd is rounded to 2 decimals (cents). Float accumulation otherwise
+#     yields ugly tails like 0.41000000000000003 in JSON output.
+out=$("$PY" "$CLI" --path "$FIXTURES" --all --json 2>&1)
+contains "$out"     "\"cost_usd\": 0.41" "summary.cost_usd rounded to 0.41"
+not_contains "$out" "0.4100000"          "summary.cost_usd has no float-noise tail"
+contains "$out"     "\"cost_usd\": 0.29" "project cost_usd rounded to cents"
+
 # ----------------------------------------------------------------------------
 # summary
 # ----------------------------------------------------------------------------

@@ -611,7 +611,11 @@ def build_report(stats_list, project_stats, scope, *, anonymize=False):
             "name": f"project-{i}" if anonymize else project,
             "active_seconds": sum(s["duration_seconds"] for s in plist),
             "turns": sum(s["turn_count"] for s in plist),
-            "cost_usd": sum(s["total_cost"] for s in plist),
+            # Round dollar amounts at the report boundary so JSON output
+            # doesn't carry float-accumulation noise like 0.41000000000000003.
+            # Other floats (strain, recovery_pct, hours_per_day) keep full
+            # precision -- the consumer formats them for display.
+            "cost_usd": round(sum(s["total_cost"] for s in plist), 2),
         })
 
     return {
@@ -624,7 +628,7 @@ def build_report(stats_list, project_stats, scope, *, anonymize=False):
             "span_seconds": total_span,
             "turns": total_turns,
             "tokens": {"in": total_input, "out": total_output},
-            "cost_usd": total_cost,
+            "cost_usd": round(total_cost, 2),
             "models": sorted(all_models),
         },
         "drs": {
