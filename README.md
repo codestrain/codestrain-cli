@@ -129,6 +129,51 @@ codestrain --all --anonymize
 | `--no-breakdown` | Suppress the per-project breakdown table. |
 | `--no-color` | Disable ANSI colors (also honors `NO_COLOR`). |
 | `--logo {auto,big,small,none}` | Control the ASCII logo: `big` always, `small` one-liner, `none` off, `auto` picks based on terminal width. |
+| `--json` | Emit the report as JSON to stdout instead of the human view (for scripts / CreatureView). See [JSON schema](#json-schema-v1) below. |
+| `--share` | Encode the anonymized report into a `codestrain.dev/s/?d=...` URL. Mutually exclusive with `--json`. |
+
+## JSON schema (v1)
+
+`codestrain --json` writes one JSON document to stdout with this shape:
+
+```jsonc
+{
+  "schema_version": 1,                       // bump signals breaking changes
+  "generated_at": "2026-05-25T14:03:00+00:00", // ISO-8601 UTC, when the run happened
+  "scope": "today" | "all_time",             // mirrors --all (no silent fallback)
+  "summary": {
+    "sessions": 1454,
+    "active_seconds": 494460.0,              // sum of inter-turn gaps ≤ 5 min
+    "span_seconds": 55269240.0,              // wall-clock first → last turn
+    "turns": 61007,
+    "tokens": { "in": 2000000, "out": 25400000 },
+    "cost_usd": 21948.61,                    // rounded to cents
+    "models": ["claude-haiku-4-5", "claude-opus-4-7", ...]  // sorted, full list
+  },
+  "drs": {                                   // null when sessions == 0
+    "strain": 9.0,                           // 0-21
+    "strain_max": 21,
+    "recovery_pct": 82.0,                    // 0-100
+    "readiness": "GREEN" | "YELLOW" | "RED",
+    "active_days": 52,
+    "hours_per_day": 2.6,
+    "late_night": false,
+    "weekend": false
+  },
+  "projects": [                              // sorted by active_seconds desc
+    { "name": "codestrain-cli", "active_seconds": 6120.0, "turns": 312, "cost_usd": 14.20 },
+    ...
+  ]
+}
+```
+
+Stability: fields under `schema_version: 1` are additive-only. Any rename or
+removal bumps `schema_version`. Consumers should refuse unknown versions.
+
+`--anonymize` replaces `projects[*].name` with `project-1`/`project-2`/...
+in the same duration-sorted order. `--project NAME` filters before the
+report is built. `--logo` and `--no-breakdown` are text-only and ignored
+in JSON mode.
 
 ## DRS — what it actually measures
 

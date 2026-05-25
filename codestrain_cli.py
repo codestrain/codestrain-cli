@@ -531,8 +531,36 @@ def build_report(stats_list, project_stats, scope, *, anonymize=False):
       anonymize     — when True, project names become project-1/project-2/...
                       in the projects list (duration-sorted order preserved).
 
-    Output: dict with keys schema_version, scope, summary, drs, projects.
-    `summary.sessions == 0` signals "no data"; renderers must handle that.
+    Output schema (also documented in README.md under "JSON schema (v1)"):
+
+      schema_version : int      -- 1; bump on breaking changes
+      generated_at   : str      -- ISO-8601 UTC, second precision
+      scope          : str      -- "today" | "all_time"
+      summary :
+        sessions       : int
+        active_seconds : float  -- sum of inter-turn gaps ≤ 5 min
+        span_seconds   : float  -- wall-clock first → last turn
+        turns          : int
+        tokens         : {in: int, out: int}
+        cost_usd       : float  -- rounded to 2 decimals
+        models         : [str]  -- sorted, full list (incl. <synthetic>)
+      drs : null when sessions == 0, otherwise:
+        strain         : float  -- 0-21
+        strain_max     : int    -- 21
+        recovery_pct   : float  -- 0-100
+        readiness      : str    -- "GREEN" | "YELLOW" | "RED"
+        active_days    : int
+        hours_per_day  : float
+        late_night     : bool
+        weekend        : bool
+      projects : list, sorted by active_seconds desc; each:
+        name           : str    -- "project-N" when anonymize=True
+        active_seconds : float
+        turns          : int
+        cost_usd       : float  -- rounded to 2 decimals
+
+    Stability: fields are additive-only within schema_version 1. Any rename
+    or removal bumps schema_version.
     """
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
