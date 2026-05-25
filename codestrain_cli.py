@@ -1198,6 +1198,11 @@ examples:
         today_scoped = [(p, s) for p, s in scanned if _is_today(s)]
         if today_scoped:
             selected = today_scoped
+        elif args.json:
+            # JSON consumers want a literal answer to "today" — return an
+            # empty today report instead of silently switching to all_time.
+            # The auto-fallback below is a UX nicety for terminal users only.
+            selected = []
         else:
             selected = scanned
             args.all = True  # so the rest of the pipeline labels & filters correctly

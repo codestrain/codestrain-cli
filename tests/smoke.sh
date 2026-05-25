@@ -150,6 +150,14 @@ out=$("$PY" "$CLI" --path "$FIXTURES" --json --share 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 2 ] && ok "--json + --share rejected with rc=2" || ng "--json + --share rejected" "rc=$rc"
 contains "$out" "mutually exclusive" "--json + --share error explains why"
 
+# 13. --json without --all returns scope=today even when today is empty -- no
+#     silent fallback to all_time. Text mode keeps the fallback (UX nicety),
+#     but JSON consumers must get a literal answer to what they asked for.
+out=$("$PY" "$CLI" --path "$FIXTURES" --json 2>&1)
+contains "$out" "\"scope\": \"today\"" "--json (no --all) keeps scope=today"
+contains "$out" "\"sessions\": 0"      "--json (no --all) reports empty today"
+not_contains "$out" "showing all-time" "--json suppresses fallback hint"
+
 # ----------------------------------------------------------------------------
 # summary
 # ----------------------------------------------------------------------------
