@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 # Keep in sync with pyproject.toml [project].version at every release.
-__version__ = "0.1.8"
+__version__ = "0.1.9"
 
 
 # ── ANSI Colors ──────────────────────────────────────────────────────────────
