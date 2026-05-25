@@ -534,9 +534,12 @@ def build_report(stats_list, project_stats, scope, *, anonymize=False):
     Output: dict with keys schema_version, scope, summary, drs, projects.
     `summary.sessions == 0` signals "no data"; renderers must handle that.
     """
+    generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
     if not stats_list:
         return {
             "schema_version": REPORT_SCHEMA_VERSION,
+            "generated_at": generated_at,
             "scope": scope,
             "summary": {
                 "sessions": 0,
@@ -613,6 +616,7 @@ def build_report(stats_list, project_stats, scope, *, anonymize=False):
 
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
+        "generated_at": generated_at,
         "scope": scope,
         "summary": {
             "sessions": len(stats_list),
@@ -1064,6 +1068,14 @@ examples:
              "in the URL itself, and ANSI colors are preserved in the web view)",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the report as JSON to stdout instead of the human-readable "
+             "text view. Use for programmatic consumption (CreatureView, scripts). "
+             "--logo and --no-breakdown are ignored in this mode; --anonymize and "
+             "--project still apply. Mutually exclusive with --share.",
+    )
+    parser.add_argument(
         "--include-probes",
         action="store_true",
         help="Include diagnostic sessions from menu-bar tools (ClaudeBar, "
@@ -1071,6 +1083,12 @@ examples:
     )
 
     args = parser.parse_args()
+
+    # --json and --share both want to "own" stdout in different ways. Refuse
+    # the combo loudly rather than silently picking one.
+    if args.json and args.share:
+        print("error: --json and --share are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
 
     # --share is a shortcut that anonymizes and prints a URL. Colors are kept
     # in the encoded payload — the web viewer at codestrain.dev/s parses ANSI
@@ -1190,6 +1208,20 @@ examples:
     project_stats = {}
     for project_name, stats in selected:
         project_stats.setdefault(project_name, []).append(stats)
+
+    # --json: emit the structured report and exit. No header, no divider, no
+    # ANSI -- pure data for programmatic consumers. Error paths above (no
+    # JSONL, bad --path) still print text to stdout and exit non-zero; that's
+    # stderr-semantics and a separate concern from the success-case contract.
+    if args.json:
+        report = build_report(
+            all_stats,
+            project_stats,
+            scope="all_time" if args.all else "today",
+            anonymize=args.anonymize,
+        )
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        sys.exit(0)
 
     # Display results — capture stdout into a buffer if --share, so we can
     # encode the rendered report into a URL after the run.

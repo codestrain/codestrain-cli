@@ -123,6 +123,33 @@ contains "$out" "project-1"                    "--share implies --anonymize (pro
 not_contains "$out" "projectA"                 "--share scrubs real project names"
 not_contains "$out" "projectB"                 "--share scrubs real project names"
 
+# 10. --json emits a parseable document with the expected schema.
+out=$("$PY" "$CLI" --path "$FIXTURES" --all --json 2>&1)
+if printf '%s' "$out" | "$PY" -c 'import sys, json; json.load(sys.stdin)' 2>/dev/null; then
+    ok "--json output parses as valid JSON"
+else
+    ng "--json output parses as valid JSON" "json.load() raised"
+fi
+contains "$out" "\"schema_version\": 1" "--json has schema_version 1"
+contains "$out" "\"generated_at\":"     "--json has generated_at"
+contains "$out" "\"scope\": \"all_time\"" "--json scope reflects --all"
+contains "$out" "\"summary\":"          "--json has summary block"
+contains "$out" "\"drs\":"              "--json has drs block"
+contains "$out" "\"projects\":"         "--json has projects block"
+not_contains "$out" "DRS Estimate"      "--json suppresses text header"
+not_contains "$out" "Per-Project Breakdown" "--json suppresses breakdown header"
+
+# 11. --json + --anonymize swaps real names for project-N in the projects list.
+out=$("$PY" "$CLI" --path "$FIXTURES" --all --json --anonymize 2>&1)
+contains "$out" "project-1"  "--json --anonymize uses project-1"
+not_contains "$out" "projectA" "--json --anonymize scrubs projectA"
+not_contains "$out" "projectB" "--json --anonymize scrubs projectB"
+
+# 12. --json + --share is rejected with a clear error (exit 2).
+out=$("$PY" "$CLI" --path "$FIXTURES" --json --share 2>&1) && rc=0 || rc=$?
+[ "$rc" -eq 2 ] && ok "--json + --share rejected with rc=2" || ng "--json + --share rejected" "rc=$rc"
+contains "$out" "mutually exclusive" "--json + --share error explains why"
+
 # ----------------------------------------------------------------------------
 # summary
 # ----------------------------------------------------------------------------
