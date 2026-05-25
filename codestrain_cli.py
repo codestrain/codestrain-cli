@@ -510,6 +510,133 @@ def estimate_recovery(strain, hours_since_last):
     return max(0.0, min(100.0, time_recovery - strain_penalty + 40.0))
 
 
+# ── Report assembly ──────────────────────────────────────────────────────────
+#
+# build_report() is the single seam between Transform and Load. Aggregation,
+# DRS estimation, and the per-project rollup all happen here, returning a
+# plain dict. Renderers (text, future --json, future latest.json cache) read
+# from that dict and do nothing else. Keep this function pure: no print, no
+# ANSI, no terminal-width logic, no file I/O.
+
+REPORT_SCHEMA_VERSION = 1
+
+
+def build_report(stats_list, project_stats, scope, *, anonymize=False):
+    """Aggregate per-session stats into a structured report dict.
+
+    Inputs:
+      stats_list    — list of per-session dicts from extract_session_stats().
+      project_stats — {project_name: [session_stats, ...]}, already grouped.
+      scope         — "today" or "all_time"; informational, included in output.
+      anonymize     — when True, project names become project-1/project-2/...
+                      in the projects list (duration-sorted order preserved).
+
+    Output: dict with keys schema_version, scope, summary, drs, projects.
+    `summary.sessions == 0` signals "no data"; renderers must handle that.
+    """
+    if not stats_list:
+        return {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "scope": scope,
+            "summary": {
+                "sessions": 0,
+                "active_seconds": 0.0,
+                "span_seconds": 0.0,
+                "turns": 0,
+                "tokens": {"in": 0, "out": 0},
+                "cost_usd": 0.0,
+                "models": [],
+            },
+            "drs": None,
+            "projects": [],
+        }
+
+    total_turns = sum(s["turn_count"] for s in stats_list)
+    total_duration = sum(s["duration_seconds"] for s in stats_list)
+    total_span = sum(s.get("span_seconds", 0) for s in stats_list)
+    total_cost = sum(s["total_cost"] for s in stats_list)
+    total_input = sum(s["total_input_tokens"] for s in stats_list)
+    total_output = sum(s["total_output_tokens"] for s in stats_list)
+    total_errors = sum(s["error_turns"] for s in stats_list)
+    all_models = set()
+    for s in stats_list:
+        all_models.update(s["models"])
+
+    # DRS — see print_session_summary history for the per-day rationale:
+    # strain formula is per active day, so feeding aggregate hours to --all
+    # would always saturate at 21/21. We normalize by distinct calendar days.
+    total_hours = total_duration / 3600.0
+    debug_ratio = total_errors / max(1, total_turns)
+
+    active_days = {
+        s["start_time"].astimezone().date()
+        for s in stats_list
+        if s.get("start_time") is not None
+    }
+    num_days = max(1, len(active_days))
+    hours_per_day = total_hours / num_days
+
+    # Late-night / weekend flags only fire if at least ~10% of the active
+    # days hit that pattern — one weekend session a year ago shouldn't flip
+    # the flag forever in --all mode.
+    late_night_days = 0
+    weekend_days = 0
+    for s in stats_list:
+        if s.get("end_time"):
+            local = s["end_time"].astimezone()
+            if local.hour >= 22 or local.hour < 6:
+                late_night_days += 1
+            if local.weekday() >= 5:
+                weekend_days += 1
+    flag_threshold = max(1, num_days // 10)
+    is_late_night = late_night_days >= flag_threshold
+    is_weekend = weekend_days >= flag_threshold
+
+    strain = estimate_strain(hours_per_day, debug_ratio, is_late_night, is_weekend)
+    recovery = estimate_recovery(strain, 8.0)  # assume 8h since last session
+
+    # Per-project rollup. Sorted by active duration desc so renderers iterate
+    # in display order with no further work.
+    projects_sorted = sorted(
+        project_stats.items(),
+        key=lambda x: sum(s["duration_seconds"] for s in x[1]),
+        reverse=True,
+    )
+    projects = []
+    for i, (project, plist) in enumerate(projects_sorted, start=1):
+        projects.append({
+            "name": f"project-{i}" if anonymize else project,
+            "active_seconds": sum(s["duration_seconds"] for s in plist),
+            "turns": sum(s["turn_count"] for s in plist),
+            "cost_usd": sum(s["total_cost"] for s in plist),
+        })
+
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "scope": scope,
+        "summary": {
+            "sessions": len(stats_list),
+            "active_seconds": total_duration,
+            "span_seconds": total_span,
+            "turns": total_turns,
+            "tokens": {"in": total_input, "out": total_output},
+            "cost_usd": total_cost,
+            "models": sorted(all_models),
+        },
+        "drs": {
+            "strain": strain,
+            "strain_max": 21,
+            "recovery_pct": recovery,
+            "readiness": "GREEN" if recovery >= 67 else ("YELLOW" if recovery >= 34 else "RED"),
+            "active_days": num_days,
+            "hours_per_day": hours_per_day,
+            "late_night": is_late_night,
+            "weekend": is_weekend,
+        },
+        "projects": projects,
+    }
+
+
 # ── Display ──────────────────────────────────────────────────────────────────
 
 def format_duration(seconds):
@@ -618,82 +745,51 @@ def print_divider(label=""):
 
 
 def print_session_summary(stats_list, label=""):
-    """Print aggregated stats for a list of session stats."""
+    """Print aggregated stats for a list of session stats.
+
+    Thin renderer: aggregation + DRS live in build_report(). This function
+    only formats text. Passing scope="" because the divider above already
+    labels the section; the report's `scope` field isn't used for text out.
+    """
     if not stats_list:
         print(f"  {c(Colors.DIM, 'No sessions found.')}")
         return
 
-    total_turns = sum(s["turn_count"] for s in stats_list)
-    total_duration = sum(s["duration_seconds"] for s in stats_list)
-    total_cost = sum(s["total_cost"] for s in stats_list)
-    total_input = sum(s["total_input_tokens"] for s in stats_list)
-    total_output = sum(s["total_output_tokens"] for s in stats_list)
-    total_errors = sum(s["error_turns"] for s in stats_list)
-    all_models = set()
-    for s in stats_list:
-        all_models.update(s["models"])
-
-    # Estimate DRS.
-    #
-    # The strain formula is per-day ("how strained are you today"). If we
-    # naively feed it the SUM of all hours across many days, the result is
-    # always 21/21 (the cap), which is meaningless for `--all` mode.
-    # Solution: compute average hours-per-active-day and feed that instead.
-    total_hours = total_duration / 3600.0
-    debug_ratio = total_errors / max(1, total_turns)
-
-    # Count distinct calendar days with at least one session.
-    active_days = {
-        s["start_time"].astimezone().date()
-        for s in stats_list
-        if s.get("start_time") is not None
-    }
-    num_days = max(1, len(active_days))
-    hours_per_day = total_hours / num_days
-
-    # Late-night / weekend flags only fire if at least ~10% of the active
-    # days hit that pattern — otherwise a single weekend session a year ago
-    # would flip the flag forever in --all mode.
-    late_night_days = 0
-    weekend_days = 0
-    for s in stats_list:
-        if s.get("end_time"):
-            local = s["end_time"].astimezone()
-            if local.hour >= 22 or local.hour < 6:
-                late_night_days += 1
-            if local.weekday() >= 5:
-                weekend_days += 1
-    flag_threshold = max(1, num_days // 10)
-    is_late_night = late_night_days >= flag_threshold
-    is_weekend = weekend_days >= flag_threshold
-
-    strain = estimate_strain(hours_per_day, debug_ratio, is_late_night, is_weekend)
-    recovery = estimate_recovery(strain, 8.0)  # assume 8h since last session
-
-    drs_col = drs_color(recovery)
+    report = build_report(stats_list, project_stats={}, scope="")
+    s = report["summary"]
+    d = report["drs"]
 
     if label:
         print(f"  {bold(label)}")
         print()
 
-    total_span = sum(s.get("span_seconds", 0) for s in stats_list)
+    sessions = s["sessions"]
+    active_s = s["active_seconds"]
+    span_s = s["span_seconds"]
+    turns = s["turns"]
+    tok_in = s["tokens"]["in"]
+    tok_out = s["tokens"]["out"]
+    cost = s["cost_usd"]
 
-    print(f"  Sessions:  {bold(str(len(stats_list)))}")
+    print(f"  Sessions:  {bold(str(sessions))}")
     # Duration = active coding time (sum of inter-turn gaps ≤ 5 min).
     # Span    = calendar wall-clock from first to last turn — usually MUCH larger
     #           because Claude Code sessions can stay open across days. We show
     #           both so the user can tell active work apart from idle drift.
-    print(f"  Duration:  {bold(format_duration(total_duration))}  "
-          f"{c(Colors.DIM, f'(span {format_duration(total_span)})')}")
-    print(f"  Turns:     {bold(str(total_turns))}")
-    print(f"  Tokens:    {c(Colors.CYAN, format_tokens(total_input))} in / {c(Colors.CYAN, format_tokens(total_output))} out")
-    print(f"  Cost:      {c(Colors.AMBER, format_cost(total_cost))}")
+    span_str = f"(span {format_duration(span_s)})"
+    print(f"  Duration:  {bold(format_duration(active_s))}  "
+          f"{c(Colors.DIM, span_str)}")
+    print(f"  Turns:     {bold(str(turns))}")
+    print(f"  Tokens:    {c(Colors.CYAN, format_tokens(tok_in))} in / "
+          f"{c(Colors.CYAN, format_tokens(tok_out))} out")
+    print(f"  Cost:      {c(Colors.AMBER, format_cost(cost))}")
 
     # Hide "<synthetic>" from the displayed list: it's not a real model, just
     # Claude Code's marker for locally-fabricated events (cached API errors,
     # interrupted turns, no-response slash commands). Token/turn counts still
-    # include them — only the user-facing Models row is filtered.
-    display_models = sorted(m for m in all_models if m != "<synthetic>")
+    # include them — only the user-facing Models row is filtered. The dict
+    # carries the full list so --json / cache consumers see everything.
+    display_models = [m for m in s["models"] if m != "<synthetic>"]
     if display_models:
         models_str = ", ".join(display_models[:3])
         if len(display_models) > 3:
@@ -701,61 +797,63 @@ def print_session_summary(stats_list, label=""):
         print(f"  Models:    {c(Colors.DIM, models_str)}")
 
     print()
-    if num_days > 1:
-        print(f"  {bold('DRS Estimate')}  "
-              f"{c(Colors.DIM, f'(avg per active day · {num_days} days · {hours_per_day:.1f}h/day)')}")
+    strain = d["strain"]
+    recovery = d["recovery_pct"]
+    active_days = d["active_days"]
+    hours_per_day = d["hours_per_day"]
+    drs_col = drs_color(recovery)
+    if active_days > 1:
+        drs_caption = f"(avg per active day · {active_days} days · {hours_per_day:.1f}h/day)"
+        print(f"  {bold('DRS Estimate')}  {c(Colors.DIM, drs_caption)}")
     else:
         print(f"  {bold('DRS Estimate')}")
     print(f"  Strain:    {c(drs_col, f'{strain:.1f}')}/21")
     print(f"  Recovery:  {c(drs_col, f'{recovery:.0f}%')}")
     print(f"  Readiness: {readiness_label(recovery)}")
 
-    if is_late_night:
+    if d["late_night"]:
         print(f"\n  {c(Colors.YELLOW, 'Late-night coding detected (+2 strain)')}")
-    if is_weekend:
+    if d["weekend"]:
         print(f"  {c(Colors.YELLOW, 'Weekend coding detected (+1.5 strain)')}")
 
 
 def print_project_breakdown(project_stats, anonymize=False):
     """Print per-project breakdown.
 
-    `anonymize` replaces real project names with `project-1` / `project-2`...
-    (preserving the duration-sorted order) so the breakdown can be safely
-    shared in screenshots / social media without leaking client names.
+    Thin renderer over the projects list from build_report(). Sorting and
+    aggregation already done there. `anonymize` is forwarded so the dict
+    arrives with project-1/project-2/... names instead of real ones (safe
+    for screenshots & social shares).
     """
     if not project_stats:
         return
 
+    report = build_report(
+        stats_list=[s for plist in project_stats.values() for s in plist],
+        project_stats=project_stats,
+        scope="",
+        anonymize=anonymize,
+    )
+    if not report["projects"]:
+        return
+
     print_divider("Per-Project Breakdown")
     print()
-
-    # Sort by total duration descending
-    sorted_projects = sorted(
-        project_stats.items(),
-        key=lambda x: sum(s["duration_seconds"] for s in x[1]),
-        reverse=True,
-    )
 
     # Pre-compute each row's plain (uncoloured) text so we can size columns
     # off the visible width. Padding inside an f-string field on already-
     # coloured strings doesn't work: ANSI escapes count toward the width
     # spec and silently eat the padding, which leaves the breakdown jagged.
     rows = []
-    for i, (project, stats_list) in enumerate(sorted_projects, start=1):
-        total_duration = sum(s["duration_seconds"] for s in stats_list)
-        total_cost = sum(s["total_cost"] for s in stats_list)
-        total_turns = sum(s["turn_count"] for s in stats_list)
-
-        if anonymize:
-            name = f"project-{i}"
-        else:
-            name = project[:30] + "..." if len(project) > 30 else project
-
+    for p in report["projects"]:
+        name = p["name"]
+        if not anonymize and len(name) > 30:
+            name = name[:30] + "..."
         rows.append((
             name,
-            format_duration(total_duration),
-            str(total_turns),
-            format_cost(total_cost),
+            format_duration(p["active_seconds"]),
+            str(p["turns"]),
+            format_cost(p["cost_usd"]),
         ))
 
     name_w  = max(len(r[0]) for r in rows)
