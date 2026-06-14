@@ -21,7 +21,7 @@ The CLI is a single command. Pick the install path your machine prefers — all 
 
 ```bash
 # macOS — recommended (Homebrew)
-brew install codestrain/tap/codestrain
+brew tap codestrain/tap && brew install codestrain
 codestrain --help
 ```
 
@@ -63,6 +63,25 @@ pip show -f codestrain | grep -E 'bin/codestrain'
 # typical macOS user-install path:
 echo 'export PATH="$HOME/Library/Python/3.11/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
+```
+
+</details>
+
+<details>
+<summary>If <code>Refusing to load formula … from untrusted tap</code></summary>
+
+Recent Homebrew can require third-party taps to be explicitly trusted (when
+`HOMEBREW_REQUIRE_TAP_TRUST` is set, which some hardened setups enable). Most
+users never see this. If you do, either tap first, or trust the tap once:
+
+```bash
+# tap explicitly, then install by short name
+brew tap codestrain/tap
+brew install codestrain
+
+# …or trust the tap once, then the one-liner works
+brew trust codestrain/tap
+brew install codestrain/tap/codestrain
 ```
 
 </details>
