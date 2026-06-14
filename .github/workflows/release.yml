@@ -97,14 +97,22 @@ jobs:
 
       - name: Update Formula in codestrain/homebrew-tap
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # SSH deploy key (write) scoped to codestrain/homebrew-tap only.
+          # Deploy keys do NOT expire — unlike the fine-grained PAT this
+          # replaces, which silently lapsed after ~30 days and broke the
+          # v0.1.9 bump. See release-infra-healthcheck.yml for the proactive
+          # auth canary that catches any future credential rot.
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           VERSION: ${{ steps.pypi.outputs.version }}
           URL: ${{ steps.pypi.outputs.url }}
           SHA: ${{ steps.pypi.outputs.sha }}
         run: |
           set -eu
-          git clone --depth 1 \
-            "https://x-access-token:${COMMITTER_TOKEN}@github.com/codestrain/homebrew-tap.git" tap
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_deploy
+          chmod 600 ~/.ssh/tap_deploy
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone --depth 1 git@github.com:codestrain/homebrew-tap.git tap
           cd tap
           # sed has to use a delimiter that doesn't appear in URLs (|).
           sed -i -E "s|^  url \".*\"|  url \"${URL}\"|" Formula/codestrain.rb

@@ -1,0 +1,50 @@
+name: Release Infra Healthcheck
+
+# Proactive credential canary for the release pipeline.
+#
+# The Homebrew auto-bump pushes to codestrain/homebrew-tap using the
+# HOMEBREW_TAP_DEPLOY_KEY SSH deploy key. Deploy keys don't expire, but a key
+# can still be revoked, rotated, or the tap repo renamed — and because the
+# PyPI publish gate is now unattended (no manual approval), a broken push
+# credential would otherwise only surface mid-release.
+#
+# This job verifies WRITE reachability to the tap on a schedule. On failure
+# the run goes red and GitHub emails the repo admins, so the credential gets
+# fixed BEFORE the next release needs it — not during one.
+
+on:
+  schedule:
+    # 09:00 UTC on the 1st of every month. Cron can't express "monthly auth
+    # check" more precisely; monthly comfortably beats the ~30-day PAT expiry
+    # window that bit us, and deploy keys have no expiry at all.
+    - cron: "0 9 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  tap-push-auth:
+    name: Verify tap push credential
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe write access to homebrew-tap over SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -eu
+          if [ -z "${DEPLOY_KEY:-}" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is missing — release bump will fail."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_deploy
+          chmod 600 ~/.ssh/tap_deploy
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          # A bare clone exercises read; a dry-run push exercises WRITE auth
+          # without mutating anything on the tap.
+          git clone --depth 1 git@github.com:codestrain/homebrew-tap.git tap
+          cd tap
+          if git push --dry-run origin HEAD:main; then
+            echo "✅ Deploy key authenticates and has push access to codestrain/homebrew-tap."
+          else
+            echo "::error::Deploy key can no longer push to codestrain/homebrew-tap. Rotate HOMEBREW_TAP_DEPLOY_KEY: generate a new ed25519 key, add the public half as a write deploy key on the tap, store the private half as the secret."
+            exit 1
+          fi
