@@ -17,9 +17,6 @@ import os
 import sys
 from pathlib import Path
 
-# Keep in sync with pyproject.toml [project].version at every release.
-__version__ = "0.1.8"
-
 
 # ── ANSI Colors ──────────────────────────────────────────────────────────────
 
@@ -593,7 +590,7 @@ def print_header_adaptive(mode="auto"):
         # else: skip logo entirely on cramped terminals
     if mode != "none":
         print()
-    print(c(Colors.DIM, f"  Your AI coding recovery score.  v{__version__}"))
+    print(c(Colors.DIM, "  Your AI coding recovery score."))
     print()
 
 
@@ -615,6 +612,105 @@ def print_divider(label=""):
         print(f"\n{c(Colors.DIM, '---')} {bold(label)} {c(Colors.DIM, '-' * fill)}")
     else:
         print(c(Colors.DIM, "-" * width))
+
+
+# ── Visualizations ───────────────────────────────────────────────────────────
+#
+# Lightweight, no-deps eye-candy. Each helper degrades gracefully:
+#   - colors off  → glyphs render in monochrome
+#   - non-TTY     → animations collapse to a single static frame, so the
+#                   --share buffer never captures redraw escapes
+#
+# Glyphs are all U+2580..U+25BF block characters + a couple of heart symbols.
+# They're widely supported in modern terminal fonts (SF Mono, JetBrains Mono,
+# Cascadia, Hack, Iosevka, Menlo). On a fallback monospace font they degrade
+# to tofu, but never break layout.
+
+GAUGE_FILLED = "▰"
+GAUGE_EMPTY = "▱"
+TOKEN_SPARK = "▁▂▃▄▅▆▇"
+HEART_FILLED = "♥"
+HEART_HOLLOW = "♡"
+
+
+def gauge_bar(value, max_value, width=20, fill_color=None):
+    """Build a `▰▰▰▰▱▱▱▱▱▱`-style bar showing value/max_value as a width-cell bar.
+
+    Filled cells render in `fill_color` (defaults to amber), empty cells dim.
+    Width is fixed so multiple bars stack cleanly. Value is clamped to [0, max].
+    """
+    if max_value <= 0:
+        ratio = 0.0
+    else:
+        ratio = max(0.0, min(1.0, value / max_value))
+    filled = round(ratio * width)
+    fill = fill_color or Colors.AMBER
+    if _colors_on:
+        return (
+            f"{fill}{GAUGE_FILLED * filled}{Colors.RESET}"
+            f"{Colors.DIM}{GAUGE_EMPTY * (width - filled)}{Colors.RESET}"
+        )
+    return GAUGE_FILLED * filled + GAUGE_EMPTY * (width - filled)
+
+
+def token_sparkline():
+    """Decorative gradient sparkline used as visual flavor on the Tokens line.
+
+    Static — the gradient just suggests 'volume building up' next to the
+    token totals. Cheaper than computing a real per-session histogram and
+    just as visually parseable for a one-line summary.
+    """
+    if _colors_on:
+        return f"{Colors.CYAN}{TOKEN_SPARK}{Colors.RESET}"
+    return TOKEN_SPARK
+
+
+def pulse_line(sessions, tokens, cost):
+    """Print a `♥ N sessions · M tokens · $X spent` summary on its own line.
+
+    Animates a short lub-dub heartbeat in TTYs (4 frames over ~1 s) and then
+    settles to a static state. Non-TTY (pipes, --share buffer, CI) skip the
+    animation entirely — only the final static line lands on stdout.
+    """
+    summary = (
+        f"{bold(str(sessions))} sessions · "
+        f"{c(Colors.CYAN, format_tokens(tokens))} tokens · "
+        f"{c(Colors.AMBER, format_cost(cost))} spent"
+    )
+    is_tty = _colors_on and sys.stdout.isatty()
+    if not is_tty:
+        # Static fallback — what ends up in --share payloads and pipes.
+        heart = c(Colors.RED, HEART_FILLED) if _colors_on else HEART_FILLED
+        print(f"  {heart} {summary}")
+        return
+
+    import time
+    # Lub-dub: relax → peak → linger → relax. Bright/bold on the peak,
+    # dim on the relaxed phases. The eye reads the boldness change before
+    # the glyph change, which is why ♡↔♥ is paired with dim↔bold.
+    frames = (
+        (Colors.DIM, HEART_HOLLOW),
+        (Colors.BOLD + Colors.RED, HEART_FILLED),
+        (Colors.RED, HEART_FILLED),
+        (Colors.DIM, HEART_HOLLOW),
+    )
+    try:
+        sys.stdout.write("\033[?25l")  # hide cursor while beating
+        sys.stdout.flush()
+        for color_prefix, glyph in frames:
+            sys.stdout.write(
+                f"\r  {color_prefix}{glyph}{Colors.RESET} {summary}\033[K"
+            )
+            sys.stdout.flush()
+            time.sleep(0.25)
+        # Final resting state: solid bright heart, leave it visible.
+        sys.stdout.write(
+            f"\r  {c(Colors.RED, HEART_FILLED)} {summary}\033[K\n"
+        )
+        sys.stdout.flush()
+    finally:
+        sys.stdout.write("\033[?25h")  # always restore cursor
+        sys.stdout.flush()
 
 
 def print_session_summary(stats_list, label=""):
@@ -686,18 +782,22 @@ def print_session_summary(stats_list, label=""):
     print(f"  Duration:  {bold(format_duration(total_duration))}  "
           f"{c(Colors.DIM, f'(span {format_duration(total_span)})')}")
     print(f"  Turns:     {bold(str(total_turns))}")
-    print(f"  Tokens:    {c(Colors.CYAN, format_tokens(total_input))} in / {c(Colors.CYAN, format_tokens(total_output))} out")
+    # Decorative sparkline + the in/out totals + the ratio. The bar is
+    # static visual flavor; the ratio is the actually-useful number for
+    # spotting cache-heavy vs cache-light workloads at a glance.
+    ratio = total_output / max(1, total_input)
+    print(
+        f"  Tokens:    {token_sparkline()}  "
+        f"{c(Colors.CYAN, format_tokens(total_input))} in · "
+        f"{c(Colors.CYAN, format_tokens(total_output))} out  "
+        f"{c(Colors.DIM, f'({ratio:.1f}x output)')}"
+    )
     print(f"  Cost:      {c(Colors.AMBER, format_cost(total_cost))}")
 
-    # Hide "<synthetic>" from the displayed list: it's not a real model, just
-    # Claude Code's marker for locally-fabricated events (cached API errors,
-    # interrupted turns, no-response slash commands). Token/turn counts still
-    # include them — only the user-facing Models row is filtered.
-    display_models = sorted(m for m in all_models if m != "<synthetic>")
-    if display_models:
-        models_str = ", ".join(display_models[:3])
-        if len(display_models) > 3:
-            models_str += f" +{len(display_models) - 3} more"
+    if all_models:
+        models_str = ", ".join(sorted(all_models)[:3])
+        if len(all_models) > 3:
+            models_str += f" +{len(all_models) - 3} more"
         print(f"  Models:    {c(Colors.DIM, models_str)}")
 
     print()
@@ -706,8 +806,12 @@ def print_session_summary(stats_list, label=""):
               f"{c(Colors.DIM, f'(avg per active day · {num_days} days · {hours_per_day:.1f}h/day)')}")
     else:
         print(f"  {bold('DRS Estimate')}")
-    print(f"  Strain:    {c(drs_col, f'{strain:.1f}')}/21")
-    print(f"  Recovery:  {c(drs_col, f'{recovery:.0f}%')}")
+    # Gauge bars next to the numeric values. Width 20 for both — Recovery
+    # is 0-100 (5 % per cell), Strain is 0-21 (~1 strain point per cell).
+    strain_bar = gauge_bar(strain, 21, width=20, fill_color=drs_col)
+    recovery_bar = gauge_bar(recovery, 100, width=20, fill_color=drs_col)
+    print(f"  Strain:    {strain_bar}  {c(drs_col, f'{strain:.1f}')}/21")
+    print(f"  Recovery:  {recovery_bar}  {c(drs_col, f'{recovery:.0f}%')}")
     print(f"  Readiness: {readiness_label(recovery)}")
 
     if is_late_night:
@@ -736,39 +840,20 @@ def print_project_breakdown(project_stats, anonymize=False):
         reverse=True,
     )
 
-    # Pre-compute each row's plain (uncoloured) text so we can size columns
-    # off the visible width. Padding inside an f-string field on already-
-    # coloured strings doesn't work: ANSI escapes count toward the width
-    # spec and silently eat the padding, which leaves the breakdown jagged.
-    rows = []
     for i, (project, stats_list) in enumerate(sorted_projects, start=1):
         total_duration = sum(s["duration_seconds"] for s in stats_list)
         total_cost = sum(s["total_cost"] for s in stats_list)
         total_turns = sum(s["turn_count"] for s in stats_list)
 
         if anonymize:
-            name = f"project-{i}"
+            project_display = f"project-{i}"
         else:
-            name = project[:30] + "..." if len(project) > 30 else project
-
-        rows.append((
-            name,
-            format_duration(total_duration),
-            str(total_turns),
-            format_cost(total_cost),
-        ))
-
-    name_w  = max(len(r[0]) for r in rows)
-    dur_w   = max(len(r[1]) for r in rows)
-    turns_w = max(len(r[2]) for r in rows)
-    cost_w  = max(len(r[3]) for r in rows)
-
-    for name, dur, turns, cost in rows:
+            project_display = project[:30] + "..." if len(project) > 30 else project
         print(
-            f"  {c(Colors.WHITE, name.ljust(name_w))}  "
-            f"{bold(dur.rjust(dur_w))}  "
-            f"{c(Colors.CYAN, turns.rjust(turns_w))} turns  "
-            f"{c(Colors.AMBER, cost.rjust(cost_w))}"
+            f"  {c(Colors.WHITE, project_display):<36}"
+            f"{bold(format_duration(total_duration)):>10}  "
+            f"{c(Colors.CYAN, str(total_turns)):>6} turns  "
+            f"{c(Colors.AMBER, format_cost(total_cost)):>8}"
         )
 
     print()
@@ -1098,9 +1183,21 @@ examples:
     import contextlib
     import io as _io
 
+    # Aggregate the totals the pulse line needs. Cheap (one pass over the
+    # final selected list) and avoids reaching into print_session_summary
+    # internals from the renderer.
+    pulse_sessions = len(all_stats)
+    pulse_tokens = sum(
+        s["total_input_tokens"] + s["total_output_tokens"] for s in all_stats
+    )
+    pulse_cost = sum(s["total_cost"] for s in all_stats)
+
     def _render_to(stream):
         with contextlib.redirect_stdout(stream):
             print_header_adaptive(args.logo)
+            if pulse_sessions > 0:
+                pulse_line(pulse_sessions, pulse_tokens, pulse_cost)
+                print()
             time_label = "Today" if not args.all else "All Time"
             if args.project and not args.anonymize:
                 time_label += f" (project: {args.project})"
